@@ -738,6 +738,43 @@
           </div>
         </div>
 
+        <!-- TOKEN SAVER -->
+        <div class="card" data-glass data-section="saver">
+          <div class="glass-panel"></div>
+          <div class="card-content">
+            <div class="card-header collapsible-header" onclick="toggleSection('saver')">
+              <i class="bi bi-chevron-down toggle-icon collapsed me-1"></i>
+              <i class="bi bi-database me-2"></i>Token Saver
+              <span class="badge bg-success ms-2" id="saverStatsBadge" style="font-size:10px;display:none">0 saved</span>
+            </div>
+            <div class="card-body collapse-section collapsed" id="section-saver">
+              <div class="mb-2">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" id="saverEnabled" onchange="saveSaverSettings()">
+                  <label class="form-check-label text-muted" for="saverEnabled" style="cursor:pointer">Enable Token Saver</label>
+                </div>
+              </div>
+              <div class="mb-2">
+                <label class="form-label" style="font-size:10px;margin-bottom:2px">Offload Mode</label>
+                <select class="form-control form-select" id="saverMode" onchange="saveSaverSettings()" style="font-size:12px">
+                  <option value="auto">Auto — offload old messages, compress content</option>
+                  <option value="aggressive">Aggressive — compress everything aggressively</option>
+                  <option value="minimal">Minimal — only offload, no compression</option>
+                </select>
+              </div>
+              <div class="d-flex flex-wrap gap-2 mt-2">
+                <button class="btn btn-sm btn-outline-action" onclick="saverRefresh()"><i class="bi bi-arrow-repeat me-1"></i>Refresh Stats</button>
+                <button class="btn btn-sm btn-outline-action" onclick="saverClear()"><i class="bi bi-trash me-1"></i>Clear Cache</button>
+                <button class="btn btn-sm btn-outline-action" onclick="saverSessions()"><i class="bi bi-people me-1"></i>Sessions</button>
+              </div>
+              <div id="saverStats" class="mt-2" style="display:none">
+                <div id="saverStatsContent" style="font-size:11px;background:rgba(0,0,0,0.2);border-radius:6px;padding:8px"></div>
+              </div>
+              <div id="saverSessionsOutput" class="mt-2" style="font-size:11px;max-height:200px;overflow-y:auto"></div>
+            </div>
+          </div>
+        </div>
+
         <!-- CONFIG -->
         <div class="card" data-glass data-section="config">
           <div class="glass-panel"></div>
@@ -1419,6 +1456,20 @@
               stats.textContent = `${data.compact.mode} (${data.compact.enabled ? 'ON' : 'OFF'})`;
             }
           }
+          if (data.tokenSaver) {
+            const badge = document.getElementById('saverStatsBadge');
+            if (badge) {
+              badge.style.display = data.tokenSaver.enabled ? '' : 'none';
+              if (data.tokenSaver.enabled) {
+                const saved = data.tokenSaver.bytesSavedFormatted || '0 B';
+                badge.textContent = `${data.tokenSaver.offloads} offloads · ${saved}`;
+              }
+            }
+            const saverEn = document.getElementById('saverEnabled');
+            if (saverEn) saverEn.checked = data.tokenSaver.enabled;
+            const saverMode = document.getElementById('saverMode');
+            if (saverMode) saverMode.value = data.tokenSaver.autoOffload ? (data.tokenSaver.offloadThreshold < 1000 ? 'aggressive' : 'auto') : 'minimal';
+          }
           if (!silent) showToast('Proxy is healthy', 'success');
         } else throw new Error('Unhealthy');
       } catch (error) {
@@ -1446,6 +1497,8 @@
         enableWallpaper: document.getElementById('wallpaperToggle').checked,
         compactEnabled: document.getElementById('compactEnabled')?.checked ?? true,
         compactMode: document.getElementById('compactMode')?.value || 'caveman',
+        tokenSaverEnabled: document.getElementById('saverEnabled')?.checked ?? true,
+        tokenSaverMode: document.getElementById('saverMode')?.value || 'auto',
       };
       try {
         const response = await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newConfig) });
@@ -1708,6 +1761,74 @@
         badge.style.display = '';
         badge.textContent = `${data.totalNodes} symbols · ${data.totalEdges} edges`;
       } catch {}
+    }
+
+    async function saverRefresh() {
+      try {
+        const resp = await fetch('/api/saver/stats');
+        const data = await resp.json();
+        const container = document.getElementById('saverStats');
+        const content = document.getElementById('saverStatsContent');
+        container.style.display = '';
+        content.innerHTML = `
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px">
+            <div><span style="color:rgba(255,255,255,0.5)">Status:</span> <span style="color:${data.enabled ? '#32CD32' : '#dc354f'}">${data.enabled ? 'Enabled' : 'Disabled'}</span></div>
+            <div><span style="color:rgba(255,255,255,0.5)">Mode:</span> ${data.autoOffload ? (data.offloadThreshold < 1000 ? 'Aggressive' : 'Auto') : 'Minimal'}</div>
+            <div><span style="color:rgba(255,255,255,0.5)">Cached Entries:</span> ${data.size}</div>
+            <div><span style="color:rgba(255,255,255,0.5)">Max Entries:</span> ${data.maxEntries}</div>
+            <div><span style="color:rgba(255,255,255,0.5)">Offloads:</span> ${data.offloads}</div>
+            <div><span style="color:rgba(255,255,255,0.5)">Bytes Saved:</span> ${data.bytesSavedFormatted}</div>
+            <div><span style="color:rgba(255,255,255,0.5)">Hits:</span> ${data.hits}</div>
+            <div><span style="color:rgba(255,255,255,0.5)">Misses:</span> ${data.misses}</div>
+            <div><span style="color:rgba(255,255,255,0.5)">Evictions:</span> ${data.evictions}</div>
+            <div><span style="color:rgba(255,255,255,0.5)">Sessions Tracked:</span> ${data.sessionsTracked}</div>
+          </div>`;
+      } catch (e) { showToast('Failed: ' + e.message, 'danger'); }
+    }
+
+    async function saverClear() {
+      try {
+        const resp = await fetch('/api/saver/clear', { method: 'POST' });
+        const data = await resp.json();
+        if (data.success) {
+          showToast('Token saver cache cleared', 'success');
+          document.getElementById('saverStats').style.display = 'none';
+          document.getElementById('saverSessionsOutput').innerHTML = '';
+        }
+      } catch (e) { showToast('Failed: ' + e.message, 'danger'); }
+    }
+
+    async function saverSessions() {
+      try {
+        const resp = await fetch('/api/saver/sessions');
+        const data = await resp.json();
+        const container = document.getElementById('saverSessionsOutput');
+        if (!data.sessions || data.sessions.length === 0) {
+          container.innerHTML = '<div class="text-muted" style="font-size:11px">No active sessions</div>';
+          return;
+        }
+        container.innerHTML = '<div style="font-size:11px;color:rgba(255,255,255,0.6);margin-bottom:4px">' + data.sessions.length + ' active session(s)</div>' +
+          data.sessions.slice(0, 20).map(s => `
+            <div style="background:rgba(0,0,0,0.2);border-radius:4px;padding:6px;margin-bottom:4px;font-size:10px">
+              <div style="color:#58a6ff">${escapeHtml(s.fingerprint)}</div>
+              <div style="color:rgba(255,255,255,0.5)">Model: ${escapeHtml(s.lastModel || '?')} · Requests: ${s.requestCount || 0} · Saved: ${s.totalSaved || 0} tokens</div>
+              <div style="color:rgba(255,255,255,0.3)">Last: ${s.lastSeen ? new Date(s.lastSeen).toLocaleString() : '?'}</div>
+            </div>
+          `).join('');
+      } catch (e) { showToast('Failed: ' + e.message, 'danger'); }
+    }
+
+    async function saveSaverSettings() {
+      const mode = document.getElementById('saverMode').value;
+      const enabled = document.getElementById('saverEnabled').checked;
+      try {
+        await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tokenSaverEnabled: enabled, tokenSaverMode: mode }),
+        });
+        showToast('Token saver settings saved', 'success');
+      } catch (e) { showToast('Failed: ' + e.message, 'danger'); }
     }
 
     function escapeHtml(text) {

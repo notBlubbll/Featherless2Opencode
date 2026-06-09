@@ -10,6 +10,7 @@ const FEATHERLESS_API_BASE = 'https://api.featherless.ai/v1';
 const API_KEY_ENV_VAR = 'FEATHERLESS_API_KEY';
 const { handleContextMode } = require('./context-mode');
 const { handleCodeGraph } = require('./codegraph');
+const { createContextManager, handleSaverRoutes } = require('./token-saver');
 
 const IS_BUN = typeof Bun !== 'undefined';
 const RUNTIME_VERSION = IS_BUN ? Bun.version : process.version.replace('v', '');
@@ -21,6 +22,7 @@ let startTime = new Date();
 let currentTokenIndex = 0;
 let globalSessionCounter = 0;
 let conversationMap = new Map();
+let ctxManager = null;
 
 // --- Per-model rate limiting ---
 const RATE_LIMIT_MAP = {};
@@ -108,6 +110,10 @@ function loadConfig() {
     CACHE_ENABLED: true,
     COMPACT_ENABLED: true,
     COMPACT_MODE: 'ultra',
+    TOKEN_SAVER_ENABLED: true,
+    TOKEN_SAVER_MODE: 'auto',
+    TOKEN_SAVER_MAX_ENTRIES: 500,
+    TOKEN_SAVER_TTL: '1h',
   };
   if (fs.existsSync(configPath)) {
     try {
@@ -124,6 +130,10 @@ function loadConfig() {
   if (process.env.CACHE_ENABLED) rawConfig.CACHE_ENABLED = process.env.CACHE_ENABLED !== 'false';
   if (process.env.COMPACT_ENABLED) rawConfig.COMPACT_ENABLED = process.env.COMPACT_ENABLED !== 'false';
   if (process.env.COMPACT_MODE) rawConfig.COMPACT_MODE = process.env.COMPACT_MODE;
+  if (process.env.TOKEN_SAVER_ENABLED) rawConfig.TOKEN_SAVER_ENABLED = process.env.TOKEN_SAVER_ENABLED !== 'false';
+  if (process.env.TOKEN_SAVER_MODE) rawConfig.TOKEN_SAVER_MODE = process.env.TOKEN_SAVER_MODE;
+  if (process.env.TOKEN_SAVER_MAX_ENTRIES) rawConfig.TOKEN_SAVER_MAX_ENTRIES = parseInt(process.env.TOKEN_SAVER_MAX_ENTRIES);
+  if (process.env.TOKEN_SAVER_TTL) rawConfig.TOKEN_SAVER_TTL = process.env.TOKEN_SAVER_TTL;
 
   const requestTimeout = parseDuration(rawConfig.REQUEST_TIMEOUT);
   if (!rawConfig.LISTEN_ADDR) throw new Error('LISTEN_ADDR cannot be empty');
@@ -156,6 +166,10 @@ function loadConfig() {
     cacheEnabled: rawConfig.CACHE_ENABLED !== false,
     compactEnabled: rawConfig.COMPACT_ENABLED !== false,
     compactMode: rawConfig.COMPACT_MODE || 'caveman',
+    tokenSaverEnabled: rawConfig.TOKEN_SAVER_ENABLED !== false,
+    tokenSaverMode: rawConfig.TOKEN_SAVER_MODE || 'auto',
+    tokenSaverMaxEntries: Math.max(10, rawConfig.TOKEN_SAVER_MAX_ENTRIES || 500),
+    tokenSaverTtl: parseDuration(rawConfig.TOKEN_SAVER_TTL || '1h') || 3600000,
   };
 }
 
@@ -190,6 +204,10 @@ function saveConfig(cfg) {
     CACHE_ENABLED: cfg.cacheEnabled !== false,
     COMPACT_ENABLED: cfg.compactEnabled !== false,
     COMPACT_MODE: cfg.compactMode || 'caveman',
+    TOKEN_SAVER_ENABLED: cfg.tokenSaverEnabled !== false,
+    TOKEN_SAVER_MODE: cfg.tokenSaverMode || 'auto',
+    TOKEN_SAVER_MAX_ENTRIES: cfg.tokenSaverMaxEntries || 500,
+    TOKEN_SAVER_TTL: `${(cfg.tokenSaverTtl || 3600000) / 1000}s`,
   }, null, 2));
 }
 
@@ -218,8 +236,9 @@ function detectSessionSignal(payload) {
   const entry = conversationMap.get(fingerprint);
   if (entry !== undefined) {
     entry.requestCount++;
-    if (entry.keyIndex !== currentTokenIndex) {
-      currentTokenIndex = entry.keyIndex;
+    const idx = (entry.keyIndex !== undefined && entry.keyIndex < tokens.length) ? entry.keyIndex : 0;
+    if (idx !== currentTokenIndex) {
+      currentTokenIndex = idx;
       config.apiKey = tokens[currentTokenIndex].key;
       if (upstream) upstream.apiKey = tokens[currentTokenIndex].key;
     }
@@ -801,7 +820,7 @@ class TokenCompactor {
       }
     }
     if (isUltra) {
-      const compactNote = '[System: input token-compressed (tokless protocol: caveman+rtk+codegraph+context-mode). Rules: (1) text aggressively compressed for max context window. (2) +=AND, !=NOT, ==EQUAL, >GREATER, <LESS, →CAUSES/LEADS-TO, <-BECAUSED-BY, ?IF/WHEN, :THEN, |ELSE. (3) abbreviations: fn=function, func=function, args=arguments, resp=response, req=request, hdr=headers, desc=description, docs=documentation, impl=implementation, env=env, cfg=config, ref=reference, stmt=statement, expr=expression, cond=condition, el=element, cls=class, obj=obj, arr=array, str=str, num=num, bool=bool, cb=callback, ep=endpoint, srv=server, cli=client, msg=message, mod=module, pkg=package, lib=lib, prop=property, attr=attr, meth=method, algo=algo, struct=struct, pre=before, post=after, w/=without, w/o=without. (4) number words → digits (twenty=20, hundred=100, million=1M). (5) articles/pronouns/copulas stripped. (6) RTK: code blocks compressed (comments stripped, collapsed to key lines), repeated keys deduped with [xN]. (7) CodeGraph: function bodies → signatures+{...}, imports kept, structural skeleton only. (8) Context-Mode: long outputs → only error/warn/key lines extracted, or condensed to N key lines. (9) interpret compressed text at face value, reconstruct full meaning from fragments. Respond normally but be concise.]';
+      const compactNote = '[System: input token-compressed (tokless protocol: caveman, rtk, codegraph, context-mode). Rules: (1) text aggressively compressed for max context window. (2) NOT=!, EQUAL==, GREATER>, LESS<, →CAUSES/LEADS-TO, <-BECAUSED-BY, ?IF/WHEN, :THEN, |ELSE. (3) abbreviations: fn=function, func=function, args=arguments, resp=response, req=request, hdr=headers, desc=description, docs=documentation, impl=implementation, env=env, cfg=config, ref=reference, stmt=statement, expr=expression, cond=condition, el=element, cls=class, obj=obj, arr=array, str=str, num=num, bool=bool, cb=callback, ep=endpoint, srv=server, cli=client, msg=message, mod=module, pkg=package, lib=lib, prop=property, attr=attr, meth=method, algo=algo, struct=struct, pre=before, post=after, w/=without, w/o=without. (4) number words → digits (twenty=20, hundred=100, million=1M). (5) articles/pronouns/copulas stripped. (6) RTK: code blocks compressed (comments stripped, collapsed to key lines), repeated keys deduped with [xN]. (7) CodeGraph: function bodies → signatures + {...}, imports kept, structural skeleton only. (8) Context-Mode: long outputs → only error/warn/key lines extracted, or condensed to N key lines. (9) interpret compressed text at face value, reconstruct full meaning from fragments. Respond normally but be concise.]';
       if (typeof payload.system === 'string') {
         payload.system = compactNote + '\n\n' + payload.system;
       } else if (Array.isArray(payload.system)) {
@@ -948,7 +967,7 @@ class TokenCompactor {
       const lower = w.toLowerCase().replace(/[.,!?;:'"()\[\]{}]/g, '');
       const punct = w.match(/[.,!?;:'"()\[\]{}]+$/)?.[0] || '';
       if (['to', 'on', 'at', 'by', 'from', 'as', 'so', 'if', 'or', 'in', 'of', 'for', 'with', 'up', 'out'].includes(lower)) continue;
-      if (lower === 'and') { out.push('+' + punct); continue; }
+      if (lower === 'and') { out.push('&' + punct); continue; }
       if (lower === 'not' || lower === "n't") { out.push('!' + punct); continue; }
       if (lower === 'equal' || lower === 'equals') { out.push('==' + punct); continue; }
       if (lower === 'greater' || lower === 'more') { out.push('>' + punct); continue; }
@@ -1219,6 +1238,253 @@ function executeProxyTool(name, args) {
   }
 }
 
+// --- Text-based tool call normalization ---
+function hasTextToolCalls(text) {
+  if (/\b(TOOL_CALLS|tool_call|<function|<tool_call>|<function_call>)/.test(text)) return true;
+  const m = text.match(/(?:fenced|json)?\s*`{3,}(?:json)?\s*\n?\s*\{/i);
+  if (m) return true;
+  return false;
+}
+
+function extractTextToolCalls(text) {
+  const tcs = [];
+  const seen = new Set();
+
+  // Fenced JSON: ```json\n{"name":"func","arguments":{...}}\n```
+  const fencedRe = /`{3,}(?:json)?\s*\n?(\{(?:[^{}]|"(?:\\.|[^"\\])*")*?(?:"name"\s*:\s*"[^"]+")\s*,\s*("arguments"|"parameters")\s*:\s*(\{(?:[^{}]|"(?:\\.|[^"\\])*")*?\}|\[.*?\])\s*\}\s*)?\n?`{3,}/gs;
+  let match;
+  while ((match = fencedRe.exec(text)) !== null) {
+    const raw = match[1] || match[0];
+    try {
+      const parsed = JSON.parse(raw.replace(/^`{3,}(?:json)?\s*/, '').replace(/\s*`{3,}$/, ''));
+      const name = parsed.name || parsed.function?.name;
+      const args = parsed.arguments || parsed.parameters || parsed.function?.arguments || {};
+      if (name && !seen.has(name)) {
+        seen.add(name);
+        tcs.push({ id: `call_${tcs.length}_${Date.now()}`, type: 'function', function: { name, arguments: typeof args === 'string' ? args : JSON.stringify(args) } });
+      }
+    } catch { /* skip unparseable */ }
+  }
+
+  // Bare inline JSON object with name + arguments
+  const inlineRe = /(?:\{|,\s*)\s*"name"\s*:\s*"([^"]+)"\s*,\s*"(?:arguments|parameters)"\s*:\s*(\{.*?\})\s*(?:\}|,)/gs;
+  while ((match = inlineRe.exec(text)) !== null) {
+    const name = match[1];
+    let argsRaw = match[2];
+    try { JSON.parse(argsRaw); } catch { continue; }
+    if (name && !seen.has(name)) {
+      seen.add(name);
+      tcs.push({ id: `call_${tcs.length}_${Date.now()}`, type: 'function', function: { name, arguments: argsRaw } });
+    }
+  }
+
+  // XML: <tool_call>...</tool_call>
+  const xmlToolCallRe = /<tool_call[^>]*>([\s\S]*?)<\/tool_call>/gi;
+  while ((match = xmlToolCallRe.exec(text)) !== null) {
+    const inner = match[1].trim();
+    // Try JSON inside
+    try {
+      const parsed = JSON.parse(inner);
+      const name = parsed.name || parsed.function?.name;
+      const args = parsed.arguments || parsed.function?.arguments || {};
+      if (name && !seen.has(name)) {
+        seen.add(name);
+        tcs.push({ id: `call_${tcs.length}_${Date.now()}`, type: 'function', function: { name, arguments: typeof args === 'string' ? args : JSON.stringify(args) } });
+        continue;
+      }
+    } catch { /* not JSON */ }
+    // Try <function name="...">...</function>
+    const fnRe = /<function\s+name\s*=\s*"([^"]+)"[^>]*>([\s\S]*?)<\/function\s*>/i;
+    const fnMatch = inner.match(fnRe);
+    if (fnMatch) {
+      const name = fnMatch[1];
+      let argsRaw = fnMatch[2].trim();
+      try { JSON.parse(argsRaw); } catch { argsRaw = JSON.stringify(argsRaw); }
+      if (name && !seen.has(name)) {
+        seen.add(name);
+        tcs.push({ id: `call_${tcs.length}_${Date.now()}`, type: 'function', function: { name, arguments: argsRaw } });
+      }
+    }
+  }
+
+  // <function=name>args</function> (DeepSeek)
+  const deepseekRe = /<function\s*=\s*"([^"]+)"[^>]*>([\s\S]*?)<\/function\s*>/gi;
+  while ((match = deepseekRe.exec(text)) !== null) {
+    const name = match[1];
+    let argsRaw = match[2].trim();
+    try { JSON.parse(argsRaw); } catch { argsRaw = JSON.stringify(argsRaw); }
+    if (name && !seen.has(name)) {
+      seen.add(name);
+      tcs.push({ id: `call_${tcs.length}_${Date.now()}`, type: 'function', function: { name, arguments: argsRaw } });
+    }
+  }
+
+  // <function_call>...</function_call> (MiniMax/DSML)
+  const fnCallRe = /<function_call[^>]*>([\s\S]*?)<\/function_call\s*>/gi;
+  while ((match = fnCallRe.exec(text)) !== null) {
+    const inner = match[1];
+    const nameMatch = inner.match(/<function_name[^>]*>([\s\S]*?)<\/function_name\s*>/i);
+    const paramsMatch = inner.match(/<parameters[^>]*>([\s\S]*?)<\/parameters\s*>/i);
+    if (nameMatch) {
+      const name = nameMatch[1].trim();
+      let argsRaw = paramsMatch ? paramsMatch[1].trim() : '{}';
+      try { JSON.parse(argsRaw); } catch { argsRaw = JSON.stringify(argsRaw); }
+      if (name && !seen.has(name)) {
+        seen.add(name);
+        tcs.push({ id: `call_${tcs.length}_${Date.now()}`, type: 'function', function: { name, arguments: argsRaw } });
+      }
+    }
+  }
+
+  // <function name="...">...</function> (generic)
+  const genericFnRe = /<function\s+name\s*=\s*"([^"]+)"[^>]*>\s*(\{(?:[^{}]|"(?:\\.|[^"\\])*")*?\})\s*<\/function\s*>/gi;
+  while ((match = genericFnRe.exec(text)) !== null) {
+    const name = match[1];
+    let argsRaw = match[2];
+    try { JSON.parse(argsRaw); } catch { continue; }
+    if (name && !seen.has(name)) {
+      seen.add(name);
+      tcs.push({ id: `call_${tcs.length}_${Date.now()}`, type: 'function', function: { name, arguments: argsRaw } });
+    }
+  }
+
+  // Mistral [TOOL_CALLS] [...] 
+  const mistralRe = /\[TOOL_CALLS\]\s*(\[[\s\S]*?\])\s*(?:$|\n)/gi;
+  while ((match = mistralRe.exec(text)) !== null) {
+    try {
+      const calls = JSON.parse(match[1]);
+      for (const call of calls) {
+        const name = call.name || call.function?.name;
+        const args = call.arguments || call.function?.arguments || {};
+        if (name && !seen.has(name)) {
+          seen.add(name);
+          tcs.push({ id: `call_${tcs.length}_${Date.now()}`, type: 'function', function: { name, arguments: typeof args === 'string' ? args : JSON.stringify(args) } });
+        }
+      }
+    } catch { /* skip */ }
+  }
+
+  return tcs;
+}
+
+function stripToolCallMarkers(text) {
+  let result = text;
+  // Fenced JSON
+  result = result.replace(/`{3,}(?:json)?[\s\S]*?`{3,}/g, '').trim();
+  // XML blocks
+  result = result.replace(/<tool_call[^>]*>[\s\S]*?<\/tool_call\s*>/gi, '');
+  result = result.replace(/<function[^>]*>[\s\S]*?<\/function\s*>/gi, '');
+  result = result.replace(/<function_call[^>]*>[\s\S]*?<\/function_call\s*>/gi, '');
+  // Mistral marker
+  result = result.replace(/\[TOOL_CALLS\][\s\S]*?(?:\n|$)/gi, '');
+  result = result.replace(/\s*,\s*"name"\s*:\s*"[^"]+"\s*,\s*"(?:arguments|parameters)"\s*:\s*\{.*?\}\s*/g, '');
+  result = result.replace(/\n{3,}/g, '\n\n').trim();
+  return result;
+}
+
+function normalizeNonStreamToolCalls(bodyText) {
+  try {
+    const data = JSON.parse(bodyText);
+    const choice = data.choices?.[0];
+    if (!choice || !choice.message) return bodyText;
+    const content = choice.message.content || '';
+    if (!content || !hasTextToolCalls(content)) return bodyText;
+    const tcs = extractTextToolCalls(content);
+    if (tcs.length === 0) return bodyText;
+    choice.message.tool_calls = tcs;
+    choice.message.content = stripToolCallMarkers(content) || null;
+    choice.finish_reason = 'tool_calls';
+    console.log(`[TextToolCalls] Normalized ${tcs.length} text tool calls: ${tcs.map(t => t.function.name).join(', ')}`);
+    return JSON.stringify(data);
+  } catch { return bodyText; }
+}
+
+function normalizeStreamToolCalls(fullText) {
+  if (!hasTextToolCalls(fullText)) return fullText;
+  const lines = fullText.split('\n');
+  const out = [];
+  let allContent = '';
+  const dataLines = [];
+  for (const line of lines) {
+    if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+      try {
+        const d = JSON.parse(line.slice(6));
+        const delta = d.choices?.[0]?.delta;
+        if (delta?.content) allContent += delta.content;
+        dataLines.push({ line, data: d, delta });
+      } catch {
+        out.push(line);
+      }
+    } else {
+      out.push(line);
+    }
+  }
+  if (!allContent || !hasTextToolCalls(allContent)) return fullText;
+  const tcs = extractTextToolCalls(allContent);
+  if (tcs.length === 0) return fullText;
+  const cleanedContent = stripToolCallMarkers(allContent);
+  let inserted = false;
+  for (let i = 0; i < dataLines.length; i++) {
+    const { data: d } = dataLines[i];
+    const choice = d.choices?.[0];
+    const delta = choice?.delta;
+    if (delta && delta.content) {
+      const idx = allContent.indexOf(delta.content);
+      if (idx >= 0) {
+        const before = allContent.substring(0, idx);
+        const after = allContent.substring(idx + delta.content.length);
+        allContent = before + after;
+        delta.content = '';
+      }
+    }
+  }
+  for (const dl of dataLines) {
+    const { data: d } = dl;
+    const choice = d.choices?.[0];
+    if (!choice) { out.push(dl.line); continue; }
+    if (!inserted && tcs.length > 0) {
+      choice.delta.tool_calls = tcs.map((tc, idx) => ({
+        index: idx,
+        id: tc.id,
+        type: tc.type,
+        function: tc.function
+      }));
+      if (cleanedContent && dl.delta?.content !== undefined) {
+        choice.delta.content = cleanedContent;
+      }
+      choice.finish_reason = 'tool_calls';
+      inserted = true;
+    } else {
+      if (dl.delta?.content !== undefined) choice.delta.content = '';
+    }
+    out.push('data: ' + JSON.stringify(d));
+  }
+  out.push('data: [DONE]');
+  console.log(`[TextToolCalls] Normalized ${tcs.length} text tool calls (stream): ${tcs.map(t => t.function.name).join(', ')}`);
+  return out.join('\n');
+}
+
+function estimateRequestTokens(payload, model) {
+  let total = 0;
+  if (payload.system) {
+    total += Math.ceil((typeof payload.system === 'string' ? payload.system : JSON.stringify(payload.system)).length / 4);
+  }
+  if (Array.isArray(payload.messages)) {
+    for (const msg of payload.messages) {
+      if (typeof msg.content === 'string') total += Math.ceil(msg.content.length / 4);
+      else if (Array.isArray(msg.content)) {
+        for (const p of msg.content) {
+          if (p && p.type === 'text' && typeof p.text === 'string') total += Math.ceil(p.text.length / 4);
+        }
+      }
+    }
+  }
+  if (Array.isArray(payload.tools)) {
+    total += Math.ceil(JSON.stringify(payload.tools).length / 4);
+  }
+  return total;
+}
+
 function hasProxyToolCalls(responseText) {
   try {
     const data = JSON.parse(responseText);
@@ -1335,6 +1601,7 @@ async function handleHealthz(req, res) {
     runtime_version: RUNTIME_VERSION,
     cache: { ...responseCache.stats, enabled: config.cacheEnabled },
     compact: { enabled: config.compactEnabled, mode: config.compactMode },
+    tokenSaver: ctxManager ? ctxManager.getStats() : { enabled: false },
   });
 }
 
@@ -1405,18 +1672,37 @@ async function proxyChatRequest(res, payload, requestedModel, writeError, writeU
   const ts = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
   console.log(`${ts} [Session#${sessNum}>${name}]-[${requestedModel}]-${JSON.stringify(promptPreview)}`);
 
-  const cloned = cloneMap(payload);
+  let cloned = cloneMap(payload);
   cloned.model = requestedModel;
   if (cloned.tools) normalizeToolSchemas(cloned.tools);
 
-  let compactBefore = 0, compactAfter = 0;
+  const originalTokens = estimateRequestTokens(payload, requestedModel);
+
+  if (config.tokenSaverEnabled && ctxManager) {
+    const fingerprint = fingerprintPayload(cloned);
+    ctxManager.compressMessages(cloned, fingerprint);
+    const offloadResult = ctxManager.offloadMessages(cloned, fingerprint);
+    cloned = offloadResult.payload;
+    if (offloadResult.offloaded.length > 0) {
+      console.log(`${ts} [Session#${sessNum}>${name}]-[${requestedModel}]-saver offloaded: ${offloadResult.offloaded.map(o => o.count + 'msgs->' + o.hash).join(', ')} (${offloadResult.stats.before}→${offloadResult.stats.after} tokens, saved ${offloadResult.stats.saved})`);
+    }
+    if (fingerprint) {
+      ctxManager.updateSessionContext(fingerprint, { lastModel: requestedModel, lastSeen: Date.now(), requestCount: (ctxManager.getSessionContext(fingerprint)?.requestCount || 0) + 1 });
+    }
+  }
+
   if (config.compactEnabled) {
     const compactor = new TokenCompactor(config.compactMode || 'caveman');
-    compactBefore = compactor.estimatePayloadTokens(cloned);
     compactor.compactMessages(cloned);
-    compactAfter = compactor.estimatePayloadTokens(cloned);
-    const savings = compactBefore > 0 ? Math.round((1 - compactAfter / compactBefore) * 100) : 0;
-    console.log(`${ts} [Session#${sessNum}>${name}]-[${requestedModel}]-compact: ${compactBefore} → ${compactAfter} tokens (${config.compactMode}, -${savings}%)`);
+  }
+
+  const finalTokens = estimateRequestTokens(cloned, requestedModel);
+  const totalSavings = originalTokens - finalTokens;
+  if (totalSavings > 0) {
+    const pct = originalTokens > 0 ? Math.round((totalSavings / originalTokens) * 100) : 0;
+    console.log(`${ts} [Session#${sessNum}>${name}]-[${requestedModel}]-tokens: ${originalTokens}→${finalTokens} (-${totalSavings}, ${pct}%)`);
+  } else if (totalSavings < 0) {
+    console.log(`${ts} [Session#${sessNum}>${name}]-[${requestedModel}]-tokens: ${originalTokens}→${finalTokens} (+${-totalSavings} overhead)`);
   }
 
   injectProxyTools(cloned);
@@ -1481,8 +1767,9 @@ async function proxyChatRequest(res, payload, requestedModel, writeError, writeU
               roundSuccess = true;
               return { retry: false };
             }
+            const normalizedFullText = normalizeStreamToolCalls(fullText);
             res.writeHead(resp.status, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
-            res.end(fullText);
+            res.end(normalizedFullText);
             const lines = fullText.split('\n').filter(l => l.startsWith('data: ') && l !== 'data: [DONE]');
             const lastContent = [...lines].reverse().find(l => {
               try { const d = JSON.parse(l.replace('data: ', '')); return d.choices && d.choices.length > 0 && d.choices[0].delta?.content; } catch { return false; }
@@ -1506,16 +1793,17 @@ async function proxyChatRequest(res, payload, requestedModel, writeError, writeU
               roundSuccess = true;
               return { retry: false };
             }
-            if (cacheEnabled && ck) responseCache.set(ck, bodyText);
+            const normalizedBodyText = normalizeNonStreamToolCalls(bodyText);
+            if (cacheEnabled && ck) responseCache.set(ck, normalizedBodyText);
             const skipHeaders = new Set(['content-length', 'transfer-encoding', 'connection', 'keep-alive', 'content-encoding']);
             for (const [key, values] of Object.entries(resp.headers)) {
               if (skipHeaders.has(key.toLowerCase())) continue;
               res.setHeader(key, values);
             }
             res.writeHead(resp.status);
-            res.end(bodyText);
-            lastBodyText = bodyText;
-            console.log(`${ts} [Session#${sessNum}>${name}]-[${requestedModel}]-body:${bodyText.substring(0, 800)}`);
+            res.end(normalizedBodyText);
+            lastBodyText = normalizedBodyText;
+            console.log(`${ts} [Session#${sessNum}>${name}]-[${requestedModel}]-body:${normalizedBodyText.substring(0, 800)}`);
           }
         } catch (e) { console.error(`proxy response copy failed: ${e.message}`); return { retry: false }; }
         console.log(`${ts} [Session#${sessNum}>${name}]-[${requestedModel}]-done:${Date.now() - reqStart}ms`);
@@ -1634,6 +1922,8 @@ async function handleRequest(req, res) {
         if (Array.isArray(newConfig.keys)) config.keys = newConfig.keys;
         if (newConfig.compactEnabled !== undefined) config.compactEnabled = newConfig.compactEnabled !== false;
         if (newConfig.compactMode) config.compactMode = newConfig.compactMode;
+        if (newConfig.tokenSaverEnabled !== undefined) { config.tokenSaverEnabled = newConfig.tokenSaverEnabled !== false; if (ctxManager) ctxManager.enabled = config.tokenSaverEnabled; }
+        if (newConfig.tokenSaverMode) { config.tokenSaverMode = newConfig.tokenSaverMode; if (ctxManager) ctxManager.autoOffload = newConfig.tokenSaverMode === 'auto' || newConfig.tokenSaverMode === 'aggressive'; }
         saveConfig(config);
         setupOpencodeConfig();
         writeJSON(res, 200, { success: true });
@@ -1822,6 +2112,10 @@ async function handleRequest(req, res) {
     if (req.method === 'DELETE') { responseCache.clear(); writeJSON(res, 200, { success: true, cache: responseCache.stats }); return; }
   }
 
+  if (pathname.startsWith('/api/saver/') && ctxManager) {
+    if (handleSaverRoutes(req, res, pathname, ctxManager)) return;
+  }
+
   if (pathname === '/healthz') { await handleHealthz(req, res); return; }
   if (pathname === '/v1/models') { await handleModels(req, res); return; }
   if (pathname === '/v1/chat/completions') { await handleChatCompletions(req, res); return; }
@@ -1903,6 +2197,8 @@ async function startServer() {
 
   responseCache = new ResponseCache(config.cacheMaxSize, config.cacheTtl);
 
+  ctxManager = createContextManager(config);
+
   if (!config.apiKey) {
     console.log('[Warning] No API key configured. Set FEATHERLESS_API_KEY env var or add API_KEY to .config/config.json');
   }
@@ -1923,6 +2219,7 @@ async function startServer() {
     console.log(`  Enabled Models: ${(config.enabledModels || []).length} (search & add via dashboard)`);
     console.log(`  Response Cache: ${config.cacheEnabled ? 'enabled (' + config.cacheMaxSize + ' entries, ' + (config.cacheTtl / 1000) + 's TTL)' : 'disabled'}`);
     console.log(`  Proxy API Keys: ${config.apiKeys.length > 0 ? config.apiKeys.length + ' (auth enabled)' : 'none (open access)'}`);
+    console.log(`  Token Saver: ${config.tokenSaverEnabled && ctxManager ? 'enabled (' + config.tokenSaverMode + ' mode, ' + ctxManager.store.stats.size + ' cached)' : 'disabled'}`);
     console.log('');
   });
 }

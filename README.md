@@ -2,7 +2,7 @@
 
 OpenAI-compatible proxy server for [Featherless AI](https://featherless.ai), with built-in **CodeGraph** code intelligence and **Context Mode** context window optimization. Zero external dependencies — uses only Node.js built-in modules.
 
-<img width="867" height="562" alt="image" src="https://github.com/user-attachments/assets/9831df02-997e-4ac9-881a-699b7a949271" />
+<img width="867" height="562" alt="image" src="https://github.com/user-attachments/assets/cf2e102f-7c9a-49f1-aa7e-56090457c749" />
 
 ## Features
 
