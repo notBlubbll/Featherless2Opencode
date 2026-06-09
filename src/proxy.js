@@ -206,7 +206,7 @@ function detectSessionSignal(payload) {
   if (tokens.length === 1) {
     const msgs = payload.messages;
     if (!Array.isArray(msgs)) return null;
-    const firstUserIdx = msgs.findIndex(m => m.role === 'user' && !TITLE_PROMPT_RE.test(text(m)));
+    const firstUserIdx = msgs.findIndex(m => m.role === 'user' && !TITLE_PROMPT_RE.test(msgText(m)));
     if (firstUserIdx < 0) return null;
     const sessNum = ++globalSessionCounter;
     const m = msgs[firstUserIdx];
@@ -317,7 +317,7 @@ async function searchFeatherlessModels(query, filters = {}) {
   const baseURL = config?.upstreamBaseURL || FEATHERLESS_API_BASE;
 
   const params = new URLSearchParams();
-  params.set('q', query || '');
+  if (query) params.set('q', query);
   if (filters.family) params.set('family', filters.family);
   if (filters.license) params.set('license', filters.license);
   if (filters.modalities) params.set('modalities', filters.modalities);
@@ -1056,7 +1056,7 @@ async function proxyChatRequest(res, payload, requestedModel, writeError, writeU
       await enforceRateLimit(requestedModel);
       let resp;
       try {
-        resp = await upstream.chatCompletions(cloned);
+        resp = await upstream.chatCompletions(payload);
       } catch (e) {
         writeError(res, 502, e.message, 'server_error', '');
         return { retry: false };
@@ -1118,7 +1118,7 @@ async function proxyChatRequest(res, payload, requestedModel, writeError, writeU
                   try { args = JSON.parse(tc.function.arguments); } catch {}
                   return executeProxyTool(tc.function.name, args);
                 });
-                addToolResultToMessages(cloned, toolCalls, results);
+                addToolResultToMessages(payload, toolCalls, results);
                 roundSuccess = true;
                 return { retry: false };
               }
@@ -1133,7 +1133,7 @@ async function proxyChatRequest(res, payload, requestedModel, writeError, writeU
                 try { args = JSON.parse(tc.function.arguments); } catch {}
                 return executeProxyTool(tc.function.name, args);
               });
-              addToolResultToMessages(cloned, toolCalls, results);
+              addToolResultToMessages(payload, toolCalls, results);
               if (cacheEnabled && ck) responseCache.set(ck, bodyText);
               roundSuccess = true;
               return { retry: false };
@@ -1318,12 +1318,15 @@ async function handleRequest(req, res) {
 
   if (pathname === '/api/models/families' && req.method === 'GET') {
     try {
-      const data = await searchFeatherlessModels('', { per_page: 200 });
+      const data = await searchFeatherlessModels('', { per_page: 5 });
       const families = new Set();
-      if (data.data && Array.isArray(data.data)) {
-        for (const m of data.data) {
-          if (m.family) families.add(m.family);
-        }
+      let page = 1;
+      const known = ['llama', 'qwen', 'deepseek', 'mistral', 'gemma', 'phi', 'yi', 'internlm', 'falcon', 'rwkv', 'starcoder', 'bloom', 'command-r', 'mpt', 'flux', 'sd', 'cog'];
+      for (const name of known) {
+        try {
+          const d = await searchFeatherlessModels('', { family: name, per_page: 1, page: String(page) });
+          if (d.data && d.data.length > 0) families.add(name);
+        } catch (_) {}
       }
       writeJSON(res, 200, { families: [...families].sort() });
     } catch (e) {
