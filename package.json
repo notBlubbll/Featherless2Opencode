@@ -1,0 +1,22 @@
+{
+  "name": "feather-proxy",
+  "version": "1.0.0",
+  "description": "OpenAI-compatible proxy server for Featherless AI",
+  "main": "src/proxy.js",
+  "scripts": {
+    "start": "node src/proxy.js",
+    "dev": "node --watch src/proxy.js",
+    "start:bun": "bun run src/proxy.js"
+  },
+  "keywords": [
+    "feather-proxy",
+    "featherless",
+    "proxy",
+    "openai",
+    "llm",
+    "api"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {}
+}
