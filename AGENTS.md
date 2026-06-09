@@ -7,16 +7,11 @@ FEATHER-PROXY/
 ├── src/
 │   ├── proxy.js              # Main proxy implementation + request router
 │   ├── codegraph.js          # Code knowledge graph (symbol extraction, edges, search, explore, impact)
-│   ├── context-mode.js       # Context optimization (sandbox executor, session DB, content store, search)
-│   └── dashboard.html        # Liquid glass dashboard with model search + CodeGraph + Context Mode UI
+│   └── dashboard.html        # Liquid glass dashboard with model search + CodeGraph UI
 ├── .config/
 │   └── config.json       # Runtime configuration
 ├── .codegraph/           # CodeGraph graph database (auto-created)
 │   └── graph.json        # Symbols, edges, files, routes
-├── .context-mode/        # Context Mode data (auto-created)
-│   ├── sessions/         # Session events and metadata
-│   ├── content/          # Indexed content chunks
-│   └── stats.json        # Global context savings stats
 ├── bin/
 │   ├── warp-plus.exe     # Warp+ VPN binary
 │   ├── opera-proxy.exe   # Opera Proxy binary
@@ -82,37 +77,7 @@ FEATHER-PROXY/
 
 **Data Storage:** `.codegraph/graph.json` — JSON graph with nodes, edges, files, routes
 
-### 5. Context Mode Module (context-mode.js)
-
-**Sandbox Executor** — 12 languages with process isolation:
-- Languages: JavaScript, TypeScript, Python, Bash, Ruby, Go, Rust, PHP, Perl, R, Elixir, C#
-- Auto-detection from code patterns when language not specified
-- Environment sanitization (60+ denied env vars: `NODE_OPTIONS`, `BASH_ENV`, `LD_PRELOAD`, etc.)
-- 100MB output cap, configurable timeout (default 30s)
-- Temp directory cleanup after execution
-
-**Content Store** — BM25-like search over indexed content:
-- Chunking: markdown split by headings, code blocks kept intact, plain text by paragraphs
-- Scoring: title match 5x weight, content match 1x, proximity bonus for adjacent terms
-- Source tracking with labels, content types (code/prose), categories
-
-**Session DB** — Event tracking with dedup and FIFO eviction:
-- 23+ event types: file_edit, file_write, git_commit, error, decision, sandbox_execute, etc.
-- SHA-256 deduplication (sliding window of 5 recent events)
-- FIFO eviction at 1000 events per session
-- Tool call counters with bytes returned tracking
-
-**Compaction Recovery** — XML resume snapshots:
-- Sections: files, errors, decisions, recent events
-- Each section includes runnable `ctx_search` queries for on-demand detail retrieval
-- Generated before context compaction, consumed on session restart
-
-**Data Storage:**
-- `.context-mode/sessions/meta.json` — Session events and tool call stats
-- `.context-mode/content/` — Indexed content chunks (JSON batches)
-- `.context-mode/stats.json` — Global savings stats
-
-### 6. HTTP Handlers (proxy.js lines 500-800)
+### 5. HTTP Handlers (proxy.js lines 500-800)
 
 - `authorized(req)` — Checks `x-api-key` header or `Authorization: Bearer` against `config.apiKeys`
 - `readBody(req)` — Buffers incoming request body to string
@@ -122,7 +87,7 @@ FEATHER-PROXY/
 - `handleChatCompletions(req, res)` — Parses body, calls `proxyChatRequest`
 - `proxyChatRequest(res, payload, model, ...)` — Core proxy: clone payload, normalize tools, forward to upstream
 
-### 7. Request Router (proxy.js lines 1550-1820)
+### 6. Request Router (proxy.js lines 1550-1820)
 
 Routes by pathname:
 - `/` or `/dashboard` → Serve `dashboard.html`
@@ -136,12 +101,11 @@ Routes by pathname:
 - `/api/keys` (GET/POST) → Multi-key CRUD
 - `/api/cache` (GET/DELETE) → Response cache stats/clear
 - `/api/cg/*` → CodeGraph routes (index, search, explore, symbol, callers, callees, impact, files, status, routes, clear)
-- `/api/ctx/*` → Context Mode routes (execute, batch-execute, index, index-file, search, stats, events, resume, purge, fetch-and-index)
 - `/healthz` → Health check
 - `/v1/models` → OpenAI models
 - `/v1/chat/completions` → OpenAI chat
 
-### 8. Opencode Config (proxy.js lines 1830-1880)
+### 7. Opencode Config (proxy.js lines 1830-1880)
 
 - `setupOpencodeConfig()` — Writes provider config with display names from `modelDisplayNames`
 - Creates `openconfig.b4feather.json` backup before first edit
@@ -153,11 +117,11 @@ Routes by pathname:
 - **Model Search UI** — Search Featherless catalog with family filter, sort by params/context, rich cards with model class/context/max tokens
 - **Enabled Models** — Click to edit display name (inline input), remove with X
 - **CodeGraph Section** — Index projects, search symbols, explore code with source display, impact analysis, status/files/routes views
-- **Context Mode Section** — Execute code in 12 languages with output display, search knowledge base, index files/text, stats badge
+- **Context Mode Section** — Search knowledge base, index files/text, stats badge (sandbox removed)
 - **Key Manager Modal** — Inline add/edit/delete for multiple API keys
 - **SS Mode** — `token-blurred` CSS class (blur on hover)
 - **Auto-refresh** — Health check every 15s
-- **Collapsible Sections** — Models, Search, Enabled, API Key, Quick Actions, Context Mode, CodeGraph, Environment, Proxy Configuration
+- **Collapsible Sections** — Models, Search, Enabled, API Key, Quick Actions, CodeGraph, Environment, Proxy Configuration
 - **Bing Wallpaper** — Daily rotating backgrounds toggle
 
 ## Request Lifecycle
@@ -198,8 +162,6 @@ Error   → parse upstream error, return formatted response
 # Syntax check
 node --check proxy.js
 node --check codegraph.js
-node --check context-mode.js
-
 # Start proxy
 node proxy.js
 
@@ -218,11 +180,6 @@ curl -X POST http://localhost:8082/api/cg/index \
 curl "http://localhost:8082/api/cg/search?q=proxy"
 curl "http://localhost:8082/api/cg/explore?q=handleRequest"
 
-# Test Context Mode
-curl -X POST http://localhost:8082/api/ctx/execute \
-  -H "Content-Type: application/json" \
-  -d '{"code": "console.log(42)", "language": "javascript"}'
-curl "http://localhost:8082/api/ctx/stats"
 ```
 
 ## Dependencies
@@ -233,9 +190,6 @@ No external npm dependencies — uses Node.js built-in modules only: `fs`, `path
 
 - `.config/config.json` — Proxy configuration (API keys, enabled models, display names)
 - `.codegraph/graph.json` — CodeGraph knowledge graph (nodes, edges, files, routes)
-- `.context-mode/sessions/meta.json` — Session events and tool call stats
-- `.context-mode/content/` — Indexed content chunks
-- `.context-mode/stats.json` — Global context savings stats
 - `.cache/wallpaper.jpg` — Cached Bing wallpaper
 
 ## Response Caching

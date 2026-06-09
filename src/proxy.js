@@ -8,9 +8,8 @@ const crypto = require('crypto');
 
 const FEATHERLESS_API_BASE = 'https://api.featherless.ai/v1';
 const API_KEY_ENV_VAR = 'FEATHERLESS_API_KEY';
-const { handleContextMode } = require('./context-mode');
-const { handleCodeGraph } = require('./codegraph');
-const { createContextManager, handleSaverRoutes } = require('./token-saver');
+
+
 
 const IS_BUN = typeof Bun !== 'undefined';
 const RUNTIME_VERSION = IS_BUN ? Bun.version : process.version.replace('v', '');
@@ -22,8 +21,8 @@ let startTime = new Date();
 let currentTokenIndex = 0;
 let globalSessionCounter = 0;
 let conversationMap = new Map();
-let ctxManager = null;
-
+let dashboardHtmlCache = null;
+const CONVERSATION_MAP_MAX = 10000;
 // --- Per-model rate limiting ---
 const RATE_LIMIT_MAP = {};
 const rateLimitTimestamps = new Map();
@@ -40,13 +39,9 @@ async function enforceRateLimit(model) {
 function extractUserPrompt(payload) {
   const msgs = payload.messages;
   if (!Array.isArray(msgs)) return '';
-  const text = (m) => {
-    const raw = typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.find(p => p?.type === 'text')?.text || '' : '');
-    return raw.replace(/^\[[^\]]+\]\s*/, '');
-  };
   const user = msgs.findLast(m => m.role === 'user');
   if (!user) return '';
-  return text(user);
+  return msgText(user).replace(/^\[[^\]]+\]\s*/, '');
 }
 
 // --- LRU Response Cache ---
@@ -108,12 +103,6 @@ function loadConfig() {
     CACHE_TTL: '60s',
     CACHE_MAX_SIZE: 100,
     CACHE_ENABLED: true,
-    COMPACT_ENABLED: true,
-    COMPACT_MODE: 'ultra',
-    TOKEN_SAVER_ENABLED: true,
-    TOKEN_SAVER_MODE: 'auto',
-    TOKEN_SAVER_MAX_ENTRIES: 500,
-    TOKEN_SAVER_TTL: '1h',
   };
   if (fs.existsSync(configPath)) {
     try {
@@ -128,12 +117,6 @@ function loadConfig() {
   if (process.env.CACHE_TTL) rawConfig.CACHE_TTL = process.env.CACHE_TTL;
   if (process.env.CACHE_MAX_SIZE) rawConfig.CACHE_MAX_SIZE = parseInt(process.env.CACHE_MAX_SIZE);
   if (process.env.CACHE_ENABLED) rawConfig.CACHE_ENABLED = process.env.CACHE_ENABLED !== 'false';
-  if (process.env.COMPACT_ENABLED) rawConfig.COMPACT_ENABLED = process.env.COMPACT_ENABLED !== 'false';
-  if (process.env.COMPACT_MODE) rawConfig.COMPACT_MODE = process.env.COMPACT_MODE;
-  if (process.env.TOKEN_SAVER_ENABLED) rawConfig.TOKEN_SAVER_ENABLED = process.env.TOKEN_SAVER_ENABLED !== 'false';
-  if (process.env.TOKEN_SAVER_MODE) rawConfig.TOKEN_SAVER_MODE = process.env.TOKEN_SAVER_MODE;
-  if (process.env.TOKEN_SAVER_MAX_ENTRIES) rawConfig.TOKEN_SAVER_MAX_ENTRIES = parseInt(process.env.TOKEN_SAVER_MAX_ENTRIES);
-  if (process.env.TOKEN_SAVER_TTL) rawConfig.TOKEN_SAVER_TTL = process.env.TOKEN_SAVER_TTL;
 
   const requestTimeout = parseDuration(rawConfig.REQUEST_TIMEOUT);
   if (!rawConfig.LISTEN_ADDR) throw new Error('LISTEN_ADDR cannot be empty');
@@ -164,12 +147,7 @@ function loadConfig() {
     cacheTtl: parseDuration(rawConfig.CACHE_TTL || '60s') || 60000,
     cacheMaxSize: Math.max(0, rawConfig.CACHE_MAX_SIZE || 100),
     cacheEnabled: rawConfig.CACHE_ENABLED !== false,
-    compactEnabled: rawConfig.COMPACT_ENABLED !== false,
-    compactMode: rawConfig.COMPACT_MODE || 'caveman',
-    tokenSaverEnabled: rawConfig.TOKEN_SAVER_ENABLED !== false,
-    tokenSaverMode: rawConfig.TOKEN_SAVER_MODE || 'auto',
-    tokenSaverMaxEntries: Math.max(10, rawConfig.TOKEN_SAVER_MAX_ENTRIES || 500),
-    tokenSaverTtl: parseDuration(rawConfig.TOKEN_SAVER_TTL || '1h') || 3600000,
+
   };
 }
 
@@ -202,26 +180,21 @@ function saveConfig(cfg) {
     CACHE_TTL: `${(cfg.cacheTtl || 60000) / 1000}s`,
     CACHE_MAX_SIZE: cfg.cacheMaxSize || 100,
     CACHE_ENABLED: cfg.cacheEnabled !== false,
-    COMPACT_ENABLED: cfg.compactEnabled !== false,
-    COMPACT_MODE: cfg.compactMode || 'caveman',
-    TOKEN_SAVER_ENABLED: cfg.tokenSaverEnabled !== false,
-    TOKEN_SAVER_MODE: cfg.tokenSaverMode || 'auto',
-    TOKEN_SAVER_MAX_ENTRIES: cfg.tokenSaverMaxEntries || 500,
-    TOKEN_SAVER_TTL: `${(cfg.tokenSaverTtl || 3600000) / 1000}s`,
+
   }, null, 2));
 }
 
 const TITLE_PROMPT_RE = /generate\s+a\s+title\s+for\s+this\s+conversation/i;
+const msgText = (m) => typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.find(p => p?.type === 'text')?.text || '' : '');
 
 // --- Session tracking ---
 function fingerprintPayload(payload) {
   const msgs = payload.messages;
   if (!Array.isArray(msgs)) return null;
-  const text = (m) => typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.find(p => p?.type === 'text')?.text || '' : '');
-  let idx = msgs.findIndex(m => m.role === 'user' && !TITLE_PROMPT_RE.test(text(m)));
+  let idx = msgs.findIndex(m => m.role === 'user' && !TITLE_PROMPT_RE.test(msgText(m)));
   if (idx < 0) idx = msgs.findIndex(m => m.role === 'user');
   if (idx < 0) return null;
-  const raw = text(msgs[idx]);
+  const raw = msgText(msgs[idx]);
   const stripped = raw.replace(/^\[[^\]]+\]\s*/, '');
   return crypto.createHash('md5').update(stripped).digest('hex').slice(0, 12);
 }
@@ -229,6 +202,19 @@ function fingerprintPayload(payload) {
 function detectSessionSignal(payload) {
   const tokens = config.keys || [];
   if (tokens.length < 1) return null;
+
+  if (tokens.length === 1) {
+    const msgs = payload.messages;
+    if (!Array.isArray(msgs)) return null;
+    const firstUserIdx = msgs.findIndex(m => m.role === 'user' && !TITLE_PROMPT_RE.test(text(m)));
+    if (firstUserIdx < 0) return null;
+    const sessNum = ++globalSessionCounter;
+    const m = msgs[firstUserIdx];
+    const label = `${tokens[0].name}|sess${sessNum}`;
+    const setter = (c) => { if (typeof c === 'string') return `[${label}] ${c}`; if (Array.isArray(c)) { const b = c.find(p => p?.type === 'text'); if (b) b.text = `[${label}] ${b.text}`; } return c; };
+    m.content = setter(m.content);
+    return { sessNum };
+  }
 
   const fingerprint = fingerprintPayload(payload);
   if (!fingerprint) return null;
@@ -252,10 +238,13 @@ function detectSessionSignal(payload) {
   }
   const newEntry = { tokenIndex: currentTokenIndex, requestCount: 1, sessNum: ++globalSessionCounter };
   conversationMap.set(fingerprint, newEntry);
+  if (conversationMap.size > CONVERSATION_MAP_MAX) {
+    const oldest = conversationMap.keys().next().value;
+    conversationMap.delete(oldest);
+  }
 
   const msgs = payload.messages;
-  const text = (m) => typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.find(p => p?.type === 'text')?.text || '' : '');
-  let stampIdx = msgs.findIndex(m => m.role === 'user' && !TITLE_PROMPT_RE.test(text(m)));
+  let stampIdx = msgs.findIndex(m => m.role === 'user' && !TITLE_PROMPT_RE.test(msgText(m)));
   if (stampIdx < 0) stampIdx = msgs.findIndex(m => m.role === 'user');
   const m = msgs[stampIdx];
   const curIdx = currentTokenIndex;
@@ -266,6 +255,8 @@ function detectSessionSignal(payload) {
 }
 
 // --- Upstream Client ---
+const UPSTREAM_AGENT = new https.Agent({ keepAlive: true, keepAliveMsecs: 60000, maxSockets: 128, timeout: 300000, maxFreeSockets: 64, scheduling: 'lifo' });
+
 class UpstreamClient {
   constructor(cfg) {
     this.baseURL = cfg.upstreamBaseURL;
@@ -278,6 +269,7 @@ class UpstreamClient {
       'Authorization': `Bearer ${this.apiKey}`,
       'Content-Type': 'application/json',
       'Accept': stream ? 'text/event-stream' : 'application/json',
+      'Connection': 'keep-alive',
     };
   }
 
@@ -288,8 +280,9 @@ class UpstreamClient {
     try {
       const resp = await fetch(requestURL, {
         method: 'GET',
-        headers: { 'Authorization': `Bearer ${this.apiKey}` },
-        signal: controller.signal
+        headers: { 'Authorization': `Bearer ${this.apiKey}`, 'Connection': 'keep-alive' },
+        signal: controller.signal,
+        agent: UPSTREAM_AGENT,
       });
       clearTimeout(timer);
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -307,7 +300,8 @@ class UpstreamClient {
         method: 'POST',
         headers: this.headers(isStream),
         body: JSON.stringify(body),
-        signal: controller.signal
+        signal: controller.signal,
+        agent: UPSTREAM_AGENT,
       });
       clearTimeout(timer);
       const responseHeaders = {};
@@ -323,7 +317,7 @@ async function searchFeatherlessModels(query, filters = {}) {
   const baseURL = config?.upstreamBaseURL || FEATHERLESS_API_BASE;
 
   const params = new URLSearchParams();
-  if (query) params.set('q', query);
+  params.set('q', query || '');
   if (filters.family) params.set('family', filters.family);
   if (filters.license) params.set('license', filters.license);
   if (filters.modalities) params.set('modalities', filters.modalities);
@@ -339,8 +333,9 @@ async function searchFeatherlessModels(query, filters = {}) {
   try {
     const resp = await fetch(url, {
       method: 'GET',
-      headers: apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {},
-      signal: controller.signal
+      headers: apiKey ? { 'Authorization': `Bearer ${apiKey}`, 'Connection': 'keep-alive' } : {},
+      signal: controller.signal,
+      agent: UPSTREAM_AGENT,
     });
     clearTimeout(timer);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -357,22 +352,8 @@ function generateClientSessionId() {
   return out;
 }
 
-function cloneMap(input) {
-  const output = {};
-  for (const [key, value] of Object.entries(input)) {
-    if (value && typeof value === 'object' && !Array.isArray(value)) output[key] = cloneMap(value);
-    else if (Array.isArray(value)) output[key] = cloneSlice(value);
-    else output[key] = value;
-  }
-  return output;
-}
-
-function cloneSlice(input) {
-  return input.map(v => {
-    if (v && typeof v === 'object' && !Array.isArray(v)) return cloneMap(v);
-    if (Array.isArray(v)) return cloneSlice(v);
-    return v;
-  });
+function cloneObj(obj) {
+  return JSON.parse(JSON.stringify(obj));
 }
 
 function normalizeToolSchemas(tools) {
@@ -394,7 +375,7 @@ function extractDefinitions(schema) {
 }
 
 function normalizeSchemaMap(node, defs, maxDepth) {
-  if (maxDepth <= 0) return cloneMap(node);
+  if (maxDepth <= 0) return cloneObj(node);
   defs = mergeDefinitions(defs, extractDefinitions(node));
   const replaced = tryResolveRef(node, defs);
   if (replaced && typeof replaced === 'object' && !Array.isArray(replaced)) {
@@ -433,7 +414,7 @@ function tryResolveRef(node, defs) {
   else if (ref.startsWith('#/$defs/')) name = ref.slice('#/$defs/'.length);
   if (!name || !defs[name]) return null;
   const def = defs[name];
-  return typeof def === 'object' && !Array.isArray(def) ? cloneMap(def) : def;
+  return typeof def === 'object' && !Array.isArray(def) ? cloneObj(def) : def;
 }
 
 function simplifyNullableCombinator(schema, key) {
@@ -558,612 +539,10 @@ function pipeBodyToResponse(body, res) {
   });
 }
 
-// --- Token Compactor ---
-class TokenCompactor {
-  constructor(mode = 'aggressive') {
-    this.mode = mode;
-    this.abbreviations = {
-      'function': 'func', 'parameter': 'param', 'parameters': 'params',
-      'return': 'ret', 'variable': 'var', 'because': 'bc',
-      'therefore': '=>', 'example': 'ex', 'information': 'info',
-      'description': 'desc', 'application': 'app', 'environment': 'env',
-      'configuration': 'config', 'implementation': 'impl',
-      'temperature': 'temp', 'horizontal': 'horiz', 'vertical': 'vert',
-      'documentation': 'docs', 'deprecated': 'depr', 'initialize': 'init',
-      'authenticate': 'auth', 'synchronize': 'sync',
-      'asynchronous': 'async', 'synchronous': 'sync',
-      'javascript': 'js', 'typescript': 'ts', 'python': 'py',
-      'advertisement': 'ad', 'advertisement': 'ad',
-      'information': 'info', 'development': 'dev',
-      'environment': 'env', 'management': 'mgmt',
-      'application': 'app', 'functionality': 'func',
-      'configuration': 'config', 'infrastructure': 'infra',
-      'repository': 'repo', 'dependency': 'dep',
-      'dependencies': 'deps', 'expression': 'expr',
-      'collection': 'coll', 'dictionary': 'dict',
-      'iteration': 'iter', 'comparison': 'comp',
-      'definition': 'def', 'inheritance': 'inherit',
-      'constructor': 'ctor', 'destructor': 'dtor',
-      'interface': 'iface', 'namespace': 'ns',
-      'argument': 'arg', 'arguments': 'args',
-      'callback': 'cb', 'Promise': 'Prom',
-      'undefined': 'undef', 'null': 'nl',
-      'boolean': 'bool', 'integer': 'int',
-      'string': 'str', 'number': 'num',
-      'object': 'obj', 'array': 'arr',
-      'element': 'el', 'components': 'comps',
-      'component': 'comp', 'properties': 'props',
-      'property': 'prop', 'attribute': 'attr',
-      'attributes': 'attrs', 'selector': 'sel',
-      'response': 'resp', 'request': 'req',
-      'header': 'hdr', 'headers': 'hdrs',
-      'endpoint': 'ep', 'database': 'db',
-      'server': 'srv', 'client': 'cli',
-      'message': 'msg', 'messages': 'msgs',
-      'channel': 'ch', 'channels': 'chs',
-      'template': 'tmpl', 'function': 'fn',
-      'methods': 'meths', 'method': 'meth',
-      'algorithm': 'algo', 'structure': 'struct',
-      'reference': 'ref', 'references': 'refs',
-      'statement': 'stmt', 'statements': 'stmts',
-      'expression': 'expr', 'expressions': 'exprs',
-      'condition': 'cond', 'conditions': 'conds',
-      'exception': 'exc', 'exceptions': 'excs',
-      'iterator': 'iter', 'iterators': 'iters',
-      'generator': 'gen', 'generators': 'gens',
-      'decorator': 'dec', 'decorators': 'decs',
-      'modifier': 'mod', 'modifiers': 'mods',
-      'operator': 'op', 'operators': 'ops',
-      'function': 'fn', 'functions': 'fns',
-      'variable': 'var', 'variables': 'vars',
-      'constant': 'const', 'constants': 'consts',
-      'constructor': 'ctor', 'constructors': 'ctors',
-      'destructor': 'dtor', 'destructors': 'dtors',
-      'argument': 'arg', 'arguments': 'args',
-      'parameter': 'param', 'parameters': 'params',
-      'property': 'prop', 'properties': 'props',
-      'attribute': 'attr', 'attributes': 'attrs',
-      'element': 'el', 'elements': 'els',
-      'component': 'comp', 'components': 'comps',
-      'module': 'mod', 'modules': 'mods',
-      'package': 'pkg', 'packages': 'pkgs',
-      'library': 'lib', 'libraries': 'libs',
-      'framework': 'fw', 'frameworks': 'fws',
-      'interface': 'iface', 'interfaces': 'ifaces',
-      'namespace': 'ns', 'namespaces': 'nss',
-      'class': 'cls', 'classes': 'clss',
-      'object': 'obj', 'objects': 'objs',
-      'array': 'arr', 'arrays': 'arrs',
-      'string': 'str', 'strings': 'strs',
-      'number': 'num', 'numbers': 'nums',
-      'boolean': 'bool', 'booleans': 'bools',
-      'null': 'nl', 'undefined': 'undef',
-      'true': 'T', 'false': 'F',
-      'return': 'ret', 'yield': 'yld',
-      'throw': 'thw', 'catch': 'cat',
-      'try': 'tr', 'finally': 'fin',
-      'if': 'if', 'else': 'els',
-      'switch': 'sw', 'case': 'cs',
-      'break': 'brk', 'continue': 'cont',
-      'for': 'fr', 'while': 'wh',
-      'do': 'do', 'loop': 'lp',
-      'import': 'imp', 'export': 'exp',
-      'from': 'fm', 'default': 'def',
-      'async': 'as', 'await': 'aw',
-      'class': 'cls', 'extends': 'ext',
-      'super': 'sup', 'this': 'ths',
-      'new': 'nw', 'delete': 'del',
-      'typeof': 'typ', 'instanceof': 'inst',
-      'void': 'vd', 'in': 'in',
-      'with': 'w', 'of': 'o',
-      'let': 'lt', 'const': 'cnst',
-      'var': 'vr', 'static': 'stat',
-      'get': 'g', 'set': 's',
-    };
-    this.fillerWords = [
-      'please', 'kindly', 'just', 'actually', 'basically', 'literally',
-      'I think', 'I believe', 'in my opinion', 'it seems like', 'the thing is',
-      'could you', 'would you', 'can you', 'can you please', 'I was wondering',
-      'I would like', 'I want', 'I need you to', 'I need',
-      'it would be great', 'it would be nice', 'that would be great',
-      'at this point in time', 'due to the fact that', 'in order to',
-      'for the purpose of', 'make sure to', 'ensure that',
-      'is able to', 'has the ability to', 'in the event that',
-      'on a regular basis', 'in the near future', 'at your earliest convenience',
-    ];
-    this.verbosePatterns = [
-      [/\bI would like you to\b/gi, 'generate'],
-      [/\bI want you to\b/gi, 'do'],
-      [/\bI need you to\b/gi, 'do'],
-      [/\bCan you help me\b/gi, 'do'],
-      [/\bCould you help me\b/gi, 'do'],
-      [/\bPlease help me\b/gi, 'do'],
-      [/\bI would appreciate it if you\b/gi, ''],
-      [/\bI would be grateful if you\b/gi, ''],
-      [/\bWrite a function that\b/gi, 'write func that'],
-      [/\bWrite a function\b/gi, 'write func'],
-      [/\bCreate a function that\b/gi, 'create func that'],
-      [/\bCreate a function\b/gi, 'create func'],
-      [/\bMake sure to\b/gi, 'must'],
-      [/\bEnsure that\b/gi, 'must'],
-      [/\bIn order to\b/gi, 'to'],
-      [/\bDue to the fact that\b/gi, 'because'],
-      [/\bAt this point in time\b/gi, 'now'],
-      [/\bIn the event that\b/gi, 'if'],
-      [/\bOn a regular basis\b/gi, 'regularly'],
-      [/\bAt your earliest convenience\b/gi, 'now'],
-      [/\bIt is important to\b/gi, 'must'],
-      [/\bIt is necessary to\b/gi, 'must'],
-      [/\bIt is essential to\b/gi, 'must'],
-      [/\bIt is crucial to\b/gi, 'must'],
-      [/\bIt is recommended to\b/gi, 'should'],
-      [/\bIt is suggested to\b/gi, 'should'],
-      [/\bIt should be noted that\b/gi, 'note:'],
-      [/\bIt goes without saying that\b/gi, ''],
-      [/\bNeedless to say\b/gi, ''],
-      [/\bIt goes without saying\b/gi, ''],
-      [/\bAs a matter of fact\b/gi, ''],
-      [/\bIn fact\b/gi, ''],
-      [/\bAs far as I am concerned\b/gi, ''],
-      [/\bFrom my perspective\b/gi, ''],
-      [/\bFrom my point of view\b/gi, ''],
-      [/\bIn my experience\b/gi, ''],
-      [/\bBased on my understanding\b/gi, ''],
-      [/\bIf I understand correctly\b/gi, ''],
-      [/\bIf I'm not mistaken\b/gi, ''],
-      [/\bTo be honest\b/gi, ''],
-      [/\bTo tell you the truth\b/gi, ''],
-      [/\bFrankly speaking\b/gi, ''],
-      [/\bNeedless to say\b/gi, ''],
-      [/\bIt is worth mentioning that\b/gi, 'note:'],
-      [/\bIt is worth noting that\b/gi, 'note:'],
-      [/\bIt should be mentioned that\b/gi, 'note:'],
-      [/\bKeep in mind that\b/gi, 'note:'],
-      [/\bRemember that\b/gi, 'note:'],
-      [/\bDo not hesitate to\b/gi, ''],
-      [/\bFeel free to\b/gi, ''],
-      [/\bDon't hesitate to\b/gi, ''],
-    ];
-    this.cavemanAbbrevs = {
-      'function': 'func', 'func': 'fn',
-      'parameter': 'param', 'return': 'ret',
-      'variable': 'var', 'because': 'bc',
-      'therefore': '=>', 'example': 'ex',
-      'information': 'info', 'description': 'desc',
-      'application': 'app', 'environment': 'env',
-      'configuration': 'config', 'implementation': 'impl',
-      'documentation': 'docs', 'deprecated': 'depr',
-      'initialize': 'init', 'authenticate': 'auth',
-      'synchronize': 'sync', 'asynchronous': 'async',
-      'development': 'dev', 'management': 'mgmt',
-      'infrastructure': 'infra', 'repository': 'repo',
-      'dependency': 'dep', 'dependencies': 'deps',
-      'expression': 'expr', 'collection': 'coll',
-      'dictionary': 'dict', 'iteration': 'iter',
-      'comparison': 'comp', 'definition': 'def',
-      'inheritance': 'inherit', 'constructor': 'ctor',
-      'interface': 'iface', 'namespace': 'ns',
-      'argument': 'arg', 'arguments': 'args',
-      'callback': 'cb', 'response': 'resp',
-      'request': 'req', 'header': 'hdr',
-      'headers': 'hdrs', 'endpoint': 'ep',
-      'database': 'db', 'server': 'srv',
-      'client': 'cli', 'message': 'msg',
-      'messages': 'msgs', 'channel': 'ch',
-      'template': 'tmpl', 'algorithm': 'algo',
-      'structure': 'struct', 'reference': 'ref',
-      'statement': 'stmt', 'condition': 'cond',
-      'exception': 'exc', 'iterator': 'iter',
-      'generator': 'gen', 'decorator': 'dec',
-      'modifier': 'mod', 'operator': 'op',
-      'module': 'mod', 'package': 'pkg',
-      'library': 'lib', 'framework': 'fw',
-      'class': 'cls', 'object': 'obj',
-      'array': 'arr', 'string': 'str',
-      'number': 'num', 'boolean': 'bool',
-      'function': 'fn', 'methods': 'meths',
-      'method': 'meth', 'properties': 'props',
-      'property': 'prop', 'attribute': 'attr',
-      'attributes': 'attrs', 'element': 'el',
-      'elements': 'els', 'component': 'comp',
-      'components': 'comps', 'elements': 'els',
-    };
-  }
 
-  estimateTokens(text) {
-    if (!text) return 0;
-    return Math.ceil(text.length / 4);
-  }
-
-  estimatePayloadTokens(payload) {
-    let total = 0;
-    if (payload.system) {
-      total += this.estimateTokens(typeof payload.system === 'string' ? payload.system : JSON.stringify(payload.system));
-    }
-    if (Array.isArray(payload.messages)) {
-      for (const msg of payload.messages) {
-        const text = typeof msg.content === 'string' ? msg.content :
-          (Array.isArray(msg.content) ? msg.content.filter(p => p?.type === 'text').map(p => p.text).join(' ') : '');
-        total += this.estimateTokens(text);
-      }
-    }
-    return total;
-  }
-
-  compactMessages(payload) {
-    if (!payload || !Array.isArray(payload.messages)) return payload;
-    const isUltra = this.mode === 'ultra';
-    for (let i = 0; i < payload.messages.length; i++) {
-      payload.messages[i] = this.compactSingleMessage(payload.messages[i]);
-    }
-    if (payload.system) {
-      payload.system = this.compactText(
-        typeof payload.system === 'string' ? payload.system : JSON.stringify(payload.system)
-      );
-    }
-    if (isUltra) {
-      for (let i = 0; i < payload.messages.length; i++) {
-        const msg = payload.messages[i];
-        if (typeof msg.content === 'string') {
-          msg.content = this.rtkFilter(msg.content);
-          msg.content = this.codegraphSkeleton(msg.content);
-          msg.content = this.contextModeExtract(msg.content);
-        } else if (Array.isArray(msg.content)) {
-          for (const part of msg.content) {
-            if (part && part.type === 'text' && typeof part.text === 'string') {
-              part.text = this.rtkFilter(part.text);
-              part.text = this.codegraphSkeleton(part.text);
-              part.text = this.contextModeExtract(part.text);
-            }
-          }
-        }
-      }
-    }
-    if (isUltra) {
-      const compactNote = '[System: input token-compressed (tokless protocol: caveman, rtk, codegraph, context-mode). Rules: (1) text aggressively compressed for max context window. (2) NOT=!, EQUAL==, GREATER>, LESS<, →CAUSES/LEADS-TO, <-BECAUSED-BY, ?IF/WHEN, :THEN, |ELSE. (3) abbreviations: fn=function, func=function, args=arguments, resp=response, req=request, hdr=headers, desc=description, docs=documentation, impl=implementation, env=env, cfg=config, ref=reference, stmt=statement, expr=expression, cond=condition, el=element, cls=class, obj=obj, arr=array, str=str, num=num, bool=bool, cb=callback, ep=endpoint, srv=server, cli=client, msg=message, mod=module, pkg=package, lib=lib, prop=property, attr=attr, meth=method, algo=algo, struct=struct, pre=before, post=after, w/=without, w/o=without. (4) number words → digits (twenty=20, hundred=100, million=1M). (5) articles/pronouns/copulas stripped. (6) RTK: code blocks compressed (comments stripped, collapsed to key lines), repeated keys deduped with [xN]. (7) CodeGraph: function bodies → signatures + {...}, imports kept, structural skeleton only. (8) Context-Mode: long outputs → only error/warn/key lines extracted, or condensed to N key lines. (9) interpret compressed text at face value, reconstruct full meaning from fragments. Respond normally but be concise.]';
-      if (typeof payload.system === 'string') {
-        payload.system = compactNote + '\n\n' + payload.system;
-      } else if (Array.isArray(payload.system)) {
-        payload.system = [{ type: 'text', text: compactNote }, ...payload.system];
-      } else {
-        payload.system = compactNote;
-      }
-    }
-    return payload;
-  }
-
-  compactSingleMessage(msg) {
-    if (!msg || typeof msg !== 'object') return msg;
-    if (typeof msg.content === 'string') {
-      msg.content = this.compactText(msg.content);
-    } else if (Array.isArray(msg.content)) {
-      for (const part of msg.content) {
-        if (part && part.type === 'text' && typeof part.text === 'string') {
-          part.text = this.compactText(part.text);
-        }
-      }
-    }
-    if (msg.role === 'assistant' && Array.isArray(msg.tool_calls)) {
-      for (const tc of msg.tool_calls) {
-        if (tc.function && typeof tc.function.arguments === 'string') {
-          tc.function.arguments = this.compactToolArguments(tc.function.arguments);
-        }
-      }
-    }
-    return msg;
-  }
-
-  compactToolArguments(argsStr) {
-    try {
-      const args = JSON.parse(argsStr);
-      const compacted = this.compactObject(args);
-      return JSON.stringify(compacted);
-    } catch {
-      return argsStr;
-    }
-  }
-
-  compactObject(obj) {
-    if (typeof obj === 'string') return this.compactText(obj);
-    if (Array.isArray(obj)) return obj.map(v => this.compactObject(v));
-    if (obj && typeof obj === 'object') {
-      const result = {};
-      for (const [k, v] of Object.entries(obj)) {
-        result[k] = this.compactObject(v);
-      }
-      return result;
-    }
-    return obj;
-  }
-
-  compactText(text) {
-    if (!text || typeof text !== 'string') return text;
-    if (this.mode === 'gentle') return this.gentleCompact(text);
-    if (this.mode === 'caveman') return this.cavemanCompact(text);
-    if (this.mode === 'ultra') return this.ultraCompact(text);
-    return this.aggressiveCompact(text);
-  }
-
-  gentleCompact(text) {
-    let result = text;
-    for (const phrase of this.fillerWords) {
-      const regex = new RegExp(`\\b${this.escapeRegex(phrase)}\\b`, 'gi');
-      result = result.replace(regex, '');
-    }
-    result = result.replace(/\s{2,}/g, ' ').trim();
-    return result;
-  }
-
-  aggressiveCompact(text) {
-    let result = this.gentleCompact(text);
-    for (const [pattern, replacement] of this.verbosePatterns) {
-      result = result.replace(pattern, replacement);
-    }
-    result = result.replace(/\s{2,}/g, ' ').trim();
-    return result;
-  }
-
-  cavemanCompact(text) {
-    let result = this.aggressiveCompact(text);
-    const words = result.split(/(\s+)/);
-    const stripped = [];
-    for (let i = 0; i < words.length; i++) {
-      const w = words[i];
-      if (/^\s+$/.test(w)) { stripped.push(w); continue; }
-      const lower = w.toLowerCase().replace(/[.,!?;:'"()\[\]{}]/g, '');
-      const punct = w.match(/[.,!?;:'"()\[\]{}]+$/)?.[0] || '';
-      if (['the', 'a', 'an'].includes(lower)) continue;
-      if (['i', 'you', 'we', 'it', 'me', 'him', 'her', 'us', 'them', 'my', 'your', 'our', 'its', 'his', 'their'].includes(lower)) continue;
-      if (['is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'can', 'shall'].includes(lower)) continue;
-      if (['that', 'this', 'these', 'those', 'which', 'who', 'whom', 'whose'].includes(lower)) continue;
-      if (['very', 'really', 'quite', 'rather', 'somewhat', 'somehow', 'anyway', 'however', 'moreover', 'furthermore', 'additionally', 'also'].includes(lower)) continue;
-      if (['then', 'than', 'too', 'also', 'already', 'still', 'yet', 'ever', 'never', 'always', 'often', 'sometimes', 'usually', 'here', 'there', 'where', 'when', 'while', 'before', 'after', 'during', 'until', 'since'].includes(lower)) continue;
-      if (['not', 'no', 'nor', 'neither', 'either'].includes(lower)) continue;
-      if (lower.length <= 2 && !/^[A-Z]/.test(w)) continue;
-      const abbrev = this.cavemanAbbrevs[lower];
-      if (abbrev) { stripped.push(abbrev + punct); continue; }
-      stripped.push(w);
-    }
-    result = stripped.join('');
-    result = result.replace(/\s{2,}/g, ' ').trim();
-    result = result.replace(/\s+([.,!?;:])/g, '$1');
-    return result;
-  }
-
-  escapeRegex(str) {
-    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  }
-
-  ultraCompact(text) {
-    let result = this.cavemanCompact(text);
-    const numberWords = {
-      'zero': '0', 'one': '1', 'two': '2', 'three': '3', 'four': '4',
-      'five': '5', 'six': '6', 'seven': '7', 'eight': '8', 'nine': '9',
-      'ten': '10', 'eleven': '11', 'twelve': '12', 'thirteen': '13',
-      'fourteen': '14', 'fifteen': '15', 'sixteen': '16', 'seventeen': '17',
-      'eighteen': '18', 'nineteen': '19', 'twenty': '20', 'thirty': '30',
-      'forty': '40', 'fifty': '50', 'sixty': '60', 'seventy': '70',
-      'eighty': '80', 'ninety': '90', 'hundred': '100', 'thousand': '1000',
-      'million': '1M', 'billion': '1B', 'trillion': '1T',
-      'first': '1st', 'second': '2nd', 'third': '3rd', 'fourth': '4th',
-      'fifth': '5th', 'sixth': '6th', 'seventh': '7th', 'eighth': '8th',
-      'ninth': '9th', 'tenth': '10th',
-    };
-    const causality = [
-      [/\bcauses?\b/gi, '→'], [/\bresults?\s+in\b/gi, '→'],
-      [/\bleads?\s+to\b/gi, '→'], [/\bso\b/gi, '→'],
-      [/\btherefore\b/gi, '→'], [/\bthus\b/gi, '→'],
-      [/\bbecause\b/gi, '<-'], [/\bsince\b/gi, '<-'],
-      [/\bdue\s+to\b/gi, '<-'], [/\bcaused\s+by\b/gi, '<-'],
-      [/\bif\b/gi, '?'], [/\bwhen\b/gi, '?'],
-      [/\bthen\b/gi, ':'], [/\belse\b/gi, '|'],
-    ];
-    for (const [pat, rep] of causality) result = result.replace(pat, rep);
-    const words = result.split(/(\s+)/);
-    const out = [];
-    for (let i = 0; i < words.length; i++) {
-      const w = words[i];
-      if (/^\s+$/.test(w)) { out.push(w); continue; }
-      const lower = w.toLowerCase().replace(/[.,!?;:'"()\[\]{}]/g, '');
-      const punct = w.match(/[.,!?;:'"()\[\]{}]+$/)?.[0] || '';
-      if (['to', 'on', 'at', 'by', 'from', 'as', 'so', 'if', 'or', 'in', 'of', 'for', 'with', 'up', 'out'].includes(lower)) continue;
-      if (lower === 'and') { out.push('&' + punct); continue; }
-      if (lower === 'not' || lower === "n't") { out.push('!' + punct); continue; }
-      if (lower === 'equal' || lower === 'equals') { out.push('==' + punct); continue; }
-      if (lower === 'greater' || lower === 'more') { out.push('>' + punct); continue; }
-      if (lower === 'less' || lower === 'fewer') { out.push('<' + punct); continue; }
-      if (lower === 'no' || lower === 'none') { out.push('0' + punct); continue; }
-      if (lower === 'before') { out.push('pre' + punct); continue; }
-      if (lower === 'after') { out.push('post' + punct); continue; }
-      if (lower === 'with') { out.push('w/' + punct); continue; }
-      if (lower === 'without') { out.push('w/o' + punct); continue; }
-      if (lower === 'should') { out.push('must' + punct); continue; }
-      if (lower === 'could') { out.push('can' + punct); continue; }
-      if (lower === 'would') { out.push('will' + punct); continue; }
-      const num = numberWords[lower];
-      if (num) { out.push(num + punct); continue; }
-      out.push(w);
-    }
-    result = out.join('');
-    result = result.replace(/\s{2,}/g, ' ').trim();
-    result = result.replace(/\s+([.,!?;:])/g, '$1');
-    result = result.replace(/,+/g, ',');
-    return result;
-  }
-
-  rtkFilter(text) {
-    if (!text || typeof text !== 'string') return text;
-    let result = text;
-    result = result.replace(/```[\s\S]*?```/g, (m) => {
-      const lines = m.split('\n');
-      if (lines.length <= 2) return m;
-      const header = lines[0];
-      const body = lines.slice(1, -1);
-      const stripped = [];
-      for (const line of body) {
-        const trimmed = line.replace(/^\s+/, '');
-        if (/^\/\//.test(trimmed) || /^\/\*/.test(trimmed) || /^\*/.test(trimmed)) continue;
-        if (/^#/.test(trimmed)) continue;
-        if (/^;/.test(trimmed)) continue;
-        if (/^<!--/.test(trimmed)) continue;
-        if (/^\s*$/.test(line)) continue;
-        stripped.push(line);
-      }
-      if (stripped.length <= 3) return header + '\n' + stripped.join('\n') + '\n```';
-      return header + '\n' + stripped.slice(0, 3).join('\n') + `\n...[${stripped.length - 3} more lines]\n\`\`\``;
-    });
-    result = result.replace(/(?:^|\n)((?:[^:\n]+:\s*.*\n?){3,})/g, (match) => {
-      const lines = match.trim().split('\n');
-      const groups = {};
-      for (const line of lines) {
-        const key = line.split(':')[0].trim().toLowerCase();
-        if (!groups[key]) groups[key] = 0;
-        groups[key]++;
-      }
-      const deduped = [];
-      const seen = new Set();
-      for (const line of lines) {
-        const key = line.split(':')[0].trim().toLowerCase();
-        if (seen.has(key)) continue;
-        seen.add(key);
-        if (groups[key] > 1) {
-          deduped.push(line.split(':')[0] + ': [x' + groups[key] + ']');
-        } else {
-          deduped.push(line);
-        }
-      }
-      return '\n' + deduped.join('\n');
-    });
-    return result;
-  }
-
-  codegraphSkeleton(text) {
-    if (!text || typeof text !== 'string') return text;
-    let result = text;
-    result = result.replace(/```[\s\S]*?```/g, (m) => {
-      const lines = m.split('\n');
-      if (lines.length <= 4) return m;
-      const lang = lines[0].replace(/```/, '').trim();
-      const body = lines.slice(1, -1);
-      const skeleton = [];
-      for (const line of body) {
-        const trimmed = line.trim();
-        if (/^(import|from|require)\s/.test(trimmed)) { skeleton.push(line); continue; }
-        if (/^(export|module\.exports|module\.exports\s*=)/.test(trimmed)) { skeleton.push(line); continue; }
-        if (/^(class|interface|type|enum)\s/.test(trimmed)) { skeleton.push(line); continue; }
-        if (/^(function|const|let|var|async)\s+\w+\s*[=(]/.test(trimmed)) {
-          const sig = trimmed.replace(/\{[\s\S]*$/, '').trim();
-          skeleton.push(line.replace(trimmed, sig + ' { ... }'));
-          continue;
-        }
-        if (/^(def|class|async def)\s/.test(trimmed)) {
-          const sig = trimmed.replace(/:[\s\S]*$/, '').trim();
-          skeleton.push(line.replace(trimmed, sig + ': ...'));
-          continue;
-        }
-        if (/^(fn|pub|impl|struct|enum|trait|mod|use)\s/.test(trimmed)) {
-          const sig = trimmed.replace(/\{[\s\S]*$/, '').trim();
-          skeleton.push(line.replace(trimmed, sig + ' { ... }'));
-          continue;
-        }
-        if (/^\s*(return|yield|throw|break|continue)\s/.test(trimmed)) { skeleton.push(line); continue; }
-        if (/^\s*(if|else|for|while|switch|try|catch)\s/.test(trimmed)) { skeleton.push(line); continue; }
-        if (/\bTODO|FIXME|HACK|BUG|XXX\b/.test(trimmed)) { skeleton.push(line); continue; }
-      }
-      if (skeleton.length <= 2) return '```' + lang + '\n' + body.slice(0, 3).join('\n') + `\n...[${body.length} lines]\n\`\`\``;
-      return '```' + lang + '\n' + skeleton.join('\n') + '\n```';
-    });
-    return result;
-  }
-
-  contextModeExtract(text) {
-    if (!text || typeof text !== 'string') return text;
-    let result = text;
-    const lines = result.split('\n');
-    if (lines.length <= 20) return result;
-    const important = [];
-    const seen = new Set();
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (/\b(error|warn|fatal|panic|fail|exception|traceback|stack\s?trace)\b/i.test(trimmed)) { important.push(line); seen.add(line); continue; }
-      if (/\b(TODO|FIXME|HACK|BUG|XXX|NOTE|IMPORTANT|CRITICAL)\b/.test(trimmed) && !seen.has(line)) { important.push(line); seen.add(line); continue; }
-      if (/\b(assert|expect|should)\b.*\b(fail|error|equal|match|throw)\b/i.test(trimmed) && !seen.has(line)) { important.push(line); seen.add(line); continue; }
-      if (/^\s*(at|from|in)\s+\S+\.\w+[\(:]/.test(trimmed) && !seen.has(line)) { important.push(line); seen.add(line); continue; }
-      if (/^\s*(pass|ok|done|success|passed|completed)\b/i.test(trimmed) && !seen.has(line)) { important.push(line); seen.add(line); continue; }
-    }
-    if (important.length === 0) {
-      const condensed = [];
-      for (let i = 0; i < lines.length; i++) {
-        if (i % Math.ceil(lines.length / 15) === 0) condensed.push(lines[i]);
-      }
-      return condensed.join('\n') + `\n...[${lines.length - condensed.length} lines condensed]`;
-    }
-    const header = `[Context-Mode: ${lines.length} lines → ${important.length} key lines]`;
-    return header + '\n' + important.join('\n');
-  }
-}
 
 // --- HTTP Handlers ---
 const PROXY_TOOLS = [
-  {
-    type: 'function',
-    function: {
-      name: '_fp_skeleton',
-      description: 'Extract code skeleton: keeps function signatures, imports, class defs, removes bodies. Returns only structural elements.',
-      parameters: {
-        type: 'object',
-        properties: {
-          code: { type: 'string', description: 'Code block to skeletonize' },
-          language: { type: 'string', description: 'Language hint (js, py, rs, go, etc.)' },
-        },
-        required: ['code'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: '_fp_extract',
-      description: 'Extract key lines from long output: errors, warnings, TODOs, stack frames. Drops noise. Returns only relevant lines.',
-      parameters: {
-        type: 'object',
-        properties: {
-          text: { type: 'string', description: 'Long text/output to extract from' },
-          focus: { type: 'string', description: 'What to extract: "errors" (default), "warnings", "key", "all"' },
-        },
-        required: ['text'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: '_fp_shrink',
-      description: 'Aggressively shrink any text. Caveman compaction: strips articles, pronouns, fillers, abbreviates, uses symbols.',
-      parameters: {
-        type: 'object',
-        properties: {
-          text: { type: 'string', description: 'Text to shrink' },
-          level: { type: 'string', description: 'Compaction level: "gentle", "aggressive", "caveman", "ultra"' },
-        },
-        required: ['text'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: '_fp_dedup',
-      description: 'Deduplicate repeated lines/blocks in text. Collapses repeated patterns with [xN] counts.',
-      parameters: {
-        type: 'object',
-        properties: {
-          text: { type: 'string', description: 'Text with potential duplicates' },
-        },
-        required: ['text'],
-      },
-    },
-  },
   {
     type: 'function',
     function: {
@@ -1196,15 +575,7 @@ const PROXY_TOOLS = [
 ];
 
 function executeProxyTool(name, args) {
-  const compactor = new TokenCompactor('ultra');
   switch (name) {
-    case '_fp_skeleton': return compactor.codegraphSkeleton('```\n' + (args.code || '') + '\n```');
-    case '_fp_extract': return compactor.contextModeExtract(args.text || '');
-    case '_fp_shrink': {
-      const c = new TokenCompactor(args.level || 'ultra');
-      return c.compactText(args.text || '');
-    }
-    case '_fp_dedup': return compactor.rtkFilter(args.text || '');
     case '_fp_diff': {
       const lines = (args.diff || '').split('\n');
       const kept = [];
@@ -1524,13 +895,15 @@ function stripProxyToolCalls(responseText) {
   } catch { return responseText; }
 }
 
+const PROXY_TOOL_CLONES = PROXY_TOOLS.map(t => JSON.parse(JSON.stringify(t)));
+const PROXY_TOOL_NAMES = new Set(PROXY_TOOLS.map(t => t.function.name));
+
 function injectProxyTools(payload) {
-  if (!config.compactEnabled) return payload;
   if (!payload.tools) payload.tools = [];
-  const existingNames = new Set(payload.tools.map(t => t.function?.name));
-  for (const tool of PROXY_TOOLS) {
-    if (!existingNames.has(tool.function.name)) {
-      payload.tools.push(cloneMap(tool));
+  const existingNames = payload.tools.reduce((s, t) => { const n = t.function?.name; if (n) s.add(n); return s; }, new Set());
+  for (let i = 0; i < PROXY_TOOL_CLONES.length; i++) {
+    if (!existingNames.has(PROXY_TOOLS[i].function.name)) {
+      payload.tools.push(PROXY_TOOL_CLONES[i]);
     }
   }
   return payload;
@@ -1600,8 +973,7 @@ async function handleHealthz(req, res) {
     runtime: IS_BUN ? 'bun' : 'node',
     runtime_version: RUNTIME_VERSION,
     cache: { ...responseCache.stats, enabled: config.cacheEnabled },
-    compact: { enabled: config.compactEnabled, mode: config.compactMode },
-    tokenSaver: ctxManager ? ctxManager.getStats() : { enabled: false },
+
   });
 }
 
@@ -1650,62 +1022,29 @@ async function proxyChatRequest(res, payload, requestedModel, writeError, writeU
     ck = cacheKey(payload, requestedModel);
     const cached = responseCache.get(ck);
     if (cached) {
-      const ts = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
       const tokens = config.keys || [];
-      const curIdx = currentTokenIndex;
-      const name = curIdx >= 0 && curIdx < tokens.length ? tokens[curIdx].name : '?';
-      const sessNum = session?.sessNum || '?';
-      const promptPreview = extractUserPrompt(payload).substring(0, 120);
-      console.log(`${ts} [Session#${sessNum}>${name}]-[${requestedModel}]-${JSON.stringify(promptPreview)}-cache:HIT`);
+      const name = tokens.length > 0 ? tokens[0].name : '?';
+      const promptPreview = extractUserPrompt(payload).substring(0, 80);
+      console.log(`${reqStart} [${name}]-[${requestedModel}]-cache:HIT ${promptPreview}`);
       try { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(cached); }
       catch (e) { /* ignore */ }
-      console.log(`${ts} [Session#${sessNum}>${name}]-[${requestedModel}]-done:0ms (cached)`);
       return;
     }
   }
 
   const tokens = config.keys || [];
-  const curIdx = currentTokenIndex;
-  const name = curIdx >= 0 && curIdx < tokens.length ? tokens[curIdx].name : '?';
+  const name = tokens.length > 0 ? tokens[0].name : '?';
   const sessNum = session?.sessNum || '?';
-  const promptPreview = extractUserPrompt(payload).substring(0, 120);
-  const ts = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-  console.log(`${ts} [Session#${sessNum}>${name}]-[${requestedModel}]-${JSON.stringify(promptPreview)}`);
+  const promptPreview = extractUserPrompt(payload).substring(0, 80);
+  console.log(`${reqStart} [Session#${sessNum}>${name}]-[${requestedModel}]-${promptPreview}`);
 
-  let cloned = cloneMap(payload);
-  cloned.model = requestedModel;
-  if (cloned.tools) normalizeToolSchemas(cloned.tools);
-
-  const originalTokens = estimateRequestTokens(payload, requestedModel);
-
-  if (config.tokenSaverEnabled && ctxManager) {
-    const fingerprint = fingerprintPayload(cloned);
-    ctxManager.compressMessages(cloned, fingerprint);
-    const offloadResult = ctxManager.offloadMessages(cloned, fingerprint);
-    cloned = offloadResult.payload;
-    if (offloadResult.offloaded.length > 0) {
-      console.log(`${ts} [Session#${sessNum}>${name}]-[${requestedModel}]-saver offloaded: ${offloadResult.offloaded.map(o => o.count + 'msgs->' + o.hash).join(', ')} (${offloadResult.stats.before}→${offloadResult.stats.after} tokens, saved ${offloadResult.stats.saved})`);
-    }
-    if (fingerprint) {
-      ctxManager.updateSessionContext(fingerprint, { lastModel: requestedModel, lastSeen: Date.now(), requestCount: (ctxManager.getSessionContext(fingerprint)?.requestCount || 0) + 1 });
-    }
+  payload.model = requestedModel;
+  if (payload.tools) {
+    const needNorm = payload.tools.some(t => t.function?.parameters?.$defs || t.function?.parameters?.definitions || t.function?.parameters?.$ref);
+    if (needNorm) normalizeToolSchemas(payload.tools);
   }
 
-  if (config.compactEnabled) {
-    const compactor = new TokenCompactor(config.compactMode || 'caveman');
-    compactor.compactMessages(cloned);
-  }
-
-  const finalTokens = estimateRequestTokens(cloned, requestedModel);
-  const totalSavings = originalTokens - finalTokens;
-  if (totalSavings > 0) {
-    const pct = originalTokens > 0 ? Math.round((totalSavings / originalTokens) * 100) : 0;
-    console.log(`${ts} [Session#${sessNum}>${name}]-[${requestedModel}]-tokens: ${originalTokens}→${finalTokens} (-${totalSavings}, ${pct}%)`);
-  } else if (totalSavings < 0) {
-    console.log(`${ts} [Session#${sessNum}>${name}]-[${requestedModel}]-tokens: ${originalTokens}→${finalTokens} (+${-totalSavings} overhead)`);
-  }
-
-  injectProxyTools(cloned);
+  injectProxyTools(payload);
 
   const MAX_TOOL_ROUNDS = 5;
   let lastResponse = null;
@@ -1724,65 +1063,71 @@ async function proxyChatRequest(res, payload, requestedModel, writeError, writeU
       }
 
       const contentType = resp.headers['content-type'] || '';
-      console.log(`${ts} [Session#${sessNum}>${name}]-[${requestedModel}]-upstream:${resp.status} ct:${contentType} round:${toolRound}`);
+      console.log(`${reqStart} [Session#${sessNum}>${name}]-[${requestedModel}]-upstream:${resp.status} ct:${contentType} round:${toolRound}`);
 
       if (resp.status >= 200 && resp.status < 300) {
         try {
           if (contentType.includes('text/event-stream')) {
             const chunks = [];
-            if (isNodeStream(resp.body)) {
-              await new Promise((resolve) => {
-                resp.body.on('data', chunk => { chunks.push(chunk); });
-                resp.body.on('end', () => resolve());
-                resp.body.on('error', () => resolve());
-              });
-            } else {
+            let headersSent = false;
+
+            const onData = (chunk) => {
+              const buf = Buffer.from(chunk);
+              chunks.push(buf);
+              if (!headersSent) {
+                res.writeHead(resp.status, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
+                headersSent = true;
+              }
+              res.write(buf);
+            };
+            const onEnd = () => { if (!headersSent) { res.writeHead(resp.status, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' }); headersSent = true; } try { res.end(); } catch {} };
+            const onError = () => { if (!headersSent) { res.writeHead(502); } try { res.end(); } catch {} };
+
+            if (resp.body && typeof resp.body.pipe === 'function') {
+              resp.body.on('data', onData);
+              resp.body.on('end', onEnd);
+              resp.body.on('error', onError);
+              await new Promise((resolve) => resp.body.on('end', () => { setTimeout(resolve, 100); }));
+              resp.body.removeListener('data', onData);
+              resp.body.removeListener('end', onEnd);
+              resp.body.removeListener('error', onError);
+            } else if (resp.body && typeof resp.body.getReader === 'function') {
               const reader = resp.body.getReader();
-              await new Promise(async (resolve) => {
-                while (true) {
-                  const { done, value } = await reader.read();
-                  if (done) { resolve(); return; }
-                  chunks.push(Buffer.from(value));
-                }
-              });
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) { onEnd(); break; }
+                onData(value);
+              }
             }
-            const fullText = Buffer.concat(chunks.map(c => Buffer.isBuffer(c) ? c : Buffer.from(c))).toString();
+
+            const fullText = Buffer.concat(chunks).toString();
             if (isModelUnavailableError(fullText)) {
               if (isLast) {
-                console.error(`${ts} [Session#${sessNum}>${name}]-[${requestedModel}]-error:200-stream-FINAL`);
+                console.error(`${reqStart} [Session#${sessNum}>${name}]-[${requestedModel}]-error:200-stream-FINAL`);
                 writeUpstreamError(res, 503, fullText);
                 return { retry: false };
               }
               return { retry: true };
             }
-            if (hasProxyToolCalls(fullText) && toolRound < MAX_TOOL_ROUNDS - 1) {
+            if (fullText.includes('_fp_') && toolRound < MAX_TOOL_ROUNDS - 1) {
               const toolCalls = extractProxyToolCalls(fullText);
-              console.log(`${ts} [Session#${sessNum}>${name}]-[${requestedModel}]-proxy-tools:${toolCalls.map(tc => tc.function.name).join(',')}`);
-              const results = toolCalls.map(tc => {
-                let args = {};
-                try { args = JSON.parse(tc.function.arguments); } catch {}
-                return executeProxyTool(tc.function.name, args);
-              });
-              addToolResultToMessages(cloned, toolCalls, results);
-              roundSuccess = true;
-              return { retry: false };
+              if (toolCalls.length > 0) {
+                console.log(`${reqStart} [Session#${sessNum}>${name}]-[${requestedModel}]-proxy-tools:${toolCalls.map(tc => tc.function.name).join(',')}`);
+                const results = toolCalls.map(tc => {
+                  let args = {};
+                  try { args = JSON.parse(tc.function.arguments); } catch {}
+                  return executeProxyTool(tc.function.name, args);
+                });
+                addToolResultToMessages(cloned, toolCalls, results);
+                roundSuccess = true;
+                return { retry: false };
+              }
             }
-            const normalizedFullText = normalizeStreamToolCalls(fullText);
-            res.writeHead(resp.status, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
-            res.end(normalizedFullText);
-            const lines = fullText.split('\n').filter(l => l.startsWith('data: ') && l !== 'data: [DONE]');
-            const lastContent = [...lines].reverse().find(l => {
-              try { const d = JSON.parse(l.replace('data: ', '')); return d.choices && d.choices.length > 0 && d.choices[0].delta?.content; } catch { return false; }
-            });
-            if (lastContent) {
-              try { const d = JSON.parse(lastContent.replace('data: ', '')); console.log(`${ts} [Session#${sessNum}>${name}]-[${requestedModel}]-body:${d.choices[0].delta.content.substring(0, 800)}`); } catch {}
-            }
-            console.log(`${ts} [Session#${sessNum}>${name}]-[${requestedModel}]-stream:${lines.length} chunks`);
           } else {
             const bodyText = await readBodyText(resp.body);
             if (hasProxyToolCalls(bodyText) && toolRound < MAX_TOOL_ROUNDS - 1) {
               const toolCalls = extractProxyToolCalls(bodyText);
-              console.log(`${ts} [Session#${sessNum}>${name}]-[${requestedModel}]-proxy-tools:${toolCalls.map(tc => tc.function.name).join(',')}`);
+              console.log(`${reqStart} [Session#${sessNum}>${name}]-[${requestedModel}]-proxy-tools:${toolCalls.map(tc => tc.function.name).join(',')}`);
               const results = toolCalls.map(tc => {
                 let args = {};
                 try { args = JSON.parse(tc.function.arguments); } catch {}
@@ -1803,17 +1148,17 @@ async function proxyChatRequest(res, payload, requestedModel, writeError, writeU
             res.writeHead(resp.status);
             res.end(normalizedBodyText);
             lastBodyText = normalizedBodyText;
-            console.log(`${ts} [Session#${sessNum}>${name}]-[${requestedModel}]-body:${normalizedBodyText.substring(0, 800)}`);
+            console.log(`${reqStart} [Session#${sessNum}>${name}]-[${requestedModel}]-body:${normalizedBodyText.substring(0, 800)}`);
           }
         } catch (e) { console.error(`proxy response copy failed: ${e.message}`); return { retry: false }; }
-        console.log(`${ts} [Session#${sessNum}>${name}]-[${requestedModel}]-done:${Date.now() - reqStart}ms`);
+        console.log(`${reqStart} [Session#${sessNum}>${name}]-[${requestedModel}]-done:${Date.now() - reqStart}ms`);
         return { retry: false };
       }
 
       const errorBodyStr = await readBodyText(resp.body);
       if (isModelUnavailableError(errorBodyStr)) {
         if (isLast) {
-          console.error(`${ts} [Session#${sessNum}>${name}]-[${requestedModel}]-error:${resp.status}-FINAL`);
+          console.error(`${reqStart} [Session#${sessNum}>${name}]-[${requestedModel}]-error:${resp.status}-FINAL`);
           writeUpstreamError(res, resp.status, errorBodyStr);
           return { retry: false };
         }
@@ -1821,13 +1166,13 @@ async function proxyChatRequest(res, payload, requestedModel, writeError, writeU
       }
       if (RATE_LIMIT_MAP[requestedModel] && isRateLimitError(resp.status, errorBodyStr)) {
         if (isLast) {
-          console.error(`${ts} [Session#${sessNum}>${name}]-[${requestedModel}]-429-FINAL`);
+          console.error(`${reqStart} [Session#${sessNum}>${name}]-[${requestedModel}]-429-FINAL`);
           writeUpstreamError(res, 429, errorBodyStr);
           return { retry: false };
         }
         return { retry: true };
       }
-      console.error(`${ts} [Session#${sessNum}>${name}]-[${requestedModel}]-error:${resp.status}`);
+      console.error(`${reqStart} [Session#${sessNum}>${name}]-[${requestedModel}]-error:${resp.status}`);
       writeUpstreamError(res, resp.status, errorBodyStr);
       return { retry: false };
     });
@@ -1855,16 +1200,15 @@ function isRateLimitError(statusCode, body) {
   return false;
 }
 
-const MAX_RETRIES = 10;
-const RETRY_DELAY_MS = 3000;
+const MAX_RETRIES = 5;
+const RETRY_DELAY_MS = 1000;
 
 async function retryLoop(fn) {
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     const result = await fn({ attempt, isLast: attempt === MAX_RETRIES });
     if (!result.retry) return result;
     if (attempt < MAX_RETRIES) {
-      const delay = RETRY_DELAY_MS + (3000 * (attempt - 1));
-      await new Promise(r => setTimeout(r, delay));
+      await new Promise(r => setTimeout(r, RETRY_DELAY_MS * attempt));
     }
   }
 }
@@ -1900,11 +1244,13 @@ async function handleRequest(req, res) {
   }
 
   if (pathname === '/dashboard' || pathname === '/') {
-    const dashboardPath = path.join(__dirname, 'dashboard.html');
-    if (!fs.existsSync(dashboardPath)) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('Dashboard not found'); return; }
-    const html = fs.readFileSync(dashboardPath);
-    res.writeHead(200, { 'Content-Type': 'text/html', 'Content-Length': html.length });
-    res.end(html);
+    if (!dashboardHtmlCache) {
+      const dashboardPath = path.join(__dirname, 'dashboard.html');
+      if (!fs.existsSync(dashboardPath)) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('Dashboard not found'); return; }
+      dashboardHtmlCache = fs.readFileSync(dashboardPath);
+    }
+    res.writeHead(200, { 'Content-Type': 'text/html', 'Content-Length': dashboardHtmlCache.length });
+    res.end(dashboardHtmlCache);
     return;
   }
 
@@ -1920,10 +1266,7 @@ async function handleRequest(req, res) {
         if (Array.isArray(newConfig.enabledModels)) config.enabledModels = newConfig.enabledModels;
         if (newConfig.modelDisplayNames && typeof newConfig.modelDisplayNames === 'object') config.modelDisplayNames = newConfig.modelDisplayNames;
         if (Array.isArray(newConfig.keys)) config.keys = newConfig.keys;
-        if (newConfig.compactEnabled !== undefined) config.compactEnabled = newConfig.compactEnabled !== false;
-        if (newConfig.compactMode) config.compactMode = newConfig.compactMode;
-        if (newConfig.tokenSaverEnabled !== undefined) { config.tokenSaverEnabled = newConfig.tokenSaverEnabled !== false; if (ctxManager) ctxManager.enabled = config.tokenSaverEnabled; }
-        if (newConfig.tokenSaverMode) { config.tokenSaverMode = newConfig.tokenSaverMode; if (ctxManager) ctxManager.autoOffload = newConfig.tokenSaverMode === 'auto' || newConfig.tokenSaverMode === 'aggressive'; }
+
         saveConfig(config);
         setupOpencodeConfig();
         writeJSON(res, 200, { success: true });
@@ -1969,6 +1312,22 @@ async function handleRequest(req, res) {
       writeJSON(res, 200, data);
     } catch (e) {
       writeJSON(res, 502, { error: { message: `Featherless API error: ${e.message}`, type: 'upstream_error' } });
+    }
+    return;
+  }
+
+  if (pathname === '/api/models/families' && req.method === 'GET') {
+    try {
+      const data = await searchFeatherlessModels('', { per_page: 200 });
+      const families = new Set();
+      if (data.data && Array.isArray(data.data)) {
+        for (const m of data.data) {
+          if (m.family) families.add(m.family);
+        }
+      }
+      writeJSON(res, 200, { families: [...families].sort() });
+    } catch (e) {
+      writeJSON(res, 502, { error: { message: e.message } });
     }
     return;
   }
@@ -2112,25 +1471,9 @@ async function handleRequest(req, res) {
     if (req.method === 'DELETE') { responseCache.clear(); writeJSON(res, 200, { success: true, cache: responseCache.stats }); return; }
   }
 
-  if (pathname.startsWith('/api/saver/') && ctxManager) {
-    if (handleSaverRoutes(req, res, pathname, ctxManager)) return;
-  }
-
   if (pathname === '/healthz') { await handleHealthz(req, res); return; }
   if (pathname === '/v1/models') { await handleModels(req, res); return; }
   if (pathname === '/v1/chat/completions') { await handleChatCompletions(req, res); return; }
-
-  // Context Mode routes
-  if (pathname.startsWith('/api/ctx/')) {
-    const handled = await handleContextMode(req, res, pathname);
-    if (handled !== false) return;
-  }
-
-  // CodeGraph routes
-  if (pathname.startsWith('/api/cg/')) {
-    const handled = await handleCodeGraph(req, res, pathname);
-    if (handled !== false) return;
-  }
 
   res.writeHead(404, { 'Content-Type': 'text/plain' });
   res.end('Not Found');
@@ -2185,10 +1528,23 @@ function setupOpencodeConfig() {
   }
 }
 
+// --- Crash Protection ---
+process.on('uncaughtException', (err) => {
+  console.error(`[CRASH] uncaughtException: ${err.message}`);
+  console.error(err.stack);
+  setTimeout(() => process.exit(1), 1000);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error(`[CRASH] unhandledRejection: ${reason?.message || reason}`);
+  if (reason?.stack) console.error(reason.stack);
+});
+
 // --- Server Startup ---
 let upstream;
+let server;
 
-async function startServer() {
+async function startServer(retryPort = null) {
   console.log('┌─────────────────────────────────────────────────────────────┐');
   console.log('│  FeatherProxy - Starting...                                 │');
   console.log('└─────────────────────────────────────────────────────────────┘');
@@ -2197,31 +1553,59 @@ async function startServer() {
 
   responseCache = new ResponseCache(config.cacheMaxSize, config.cacheTtl);
 
-  ctxManager = createContextManager(config);
-
   if (!config.apiKey) {
     console.log('[Warning] No API key configured. Set FEATHERLESS_API_KEY env var or add API_KEY to .config/config.json');
   }
 
   upstream = new UpstreamClient(config);
-  const apiKeyValid = await validateApiKey();
+  try {
+    await validateApiKey();
+  } catch (e) {
+    console.log(`[Warning] API key validation skipped: ${e.message}`);
+  }
 
   setupOpencodeConfig();
 
-  const port = parseInt(config.listenAddr.split(':').pop()) || 8082;
-  const server = http.createServer(handleRequest);
+  let retryCount = 0;
+  const MAX_RETRIES = 3;
+  const basePort = parseInt(config.listenAddr.split(':').pop()) || 8082;
+  let port = retryPort || basePort;
+  server = http.createServer(handleRequest);
+
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      retryCount++;
+      if (retryCount > MAX_RETRIES) {
+        port = basePort + 1;
+        console.log(`[Warning] Port ${basePort} busy after ${MAX_RETRIES} retries, trying port ${port}`);
+        retryCount = 0;
+        server.close();
+        server.listen(port, '127.0.0.1');
+        return;
+      }
+      console.log(`[Warning] Port ${port} in use (attempt ${retryCount}/${MAX_RETRIES}), retrying in 2s...`);
+      setTimeout(() => {
+        server.close();
+        server.listen(port, '127.0.0.1');
+      }, 2000);
+      return;
+    }
+    console.error(`[CRASH] Server error: ${err.message}`);
+  });
+
   server.listen(port, '127.0.0.1', () => {
     console.log(`\nFeatherProxy on http://127.0.0.1:${port}`);
     console.log(`  Provider: Featherless AI`);
     console.log(`  Upstream: ${config.upstreamBaseURL}`);
     console.log(`  API Key: ${config.apiKey ? 'configured (' + config.apiKey.substring(0, 10) + '...)' : 'NOT SET'}`);
-    console.log(`  API Key Valid: ${apiKeyValid}`);
     console.log(`  Enabled Models: ${(config.enabledModels || []).length} (search & add via dashboard)`);
     console.log(`  Response Cache: ${config.cacheEnabled ? 'enabled (' + config.cacheMaxSize + ' entries, ' + (config.cacheTtl / 1000) + 's TTL)' : 'disabled'}`);
     console.log(`  Proxy API Keys: ${config.apiKeys.length > 0 ? config.apiKeys.length + ' (auth enabled)' : 'none (open access)'}`);
-    console.log(`  Token Saver: ${config.tokenSaverEnabled && ctxManager ? 'enabled (' + config.tokenSaverMode + ' mode, ' + ctxManager.store.stats.size + ' cached)' : 'disabled'}`);
     console.log('');
   });
 }
 
-startServer().catch(e => { console.error('Failed to start server:', e.message); process.exit(1); });
+startServer().catch(e => {
+  console.error(`[CRASH] Failed to start server: ${e.message}`);
+  setTimeout(() => process.exit(1), 1000);
+});

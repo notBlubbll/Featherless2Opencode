@@ -15,7 +15,7 @@ OpenAI-compatible proxy server for [Featherless AI](https://featherless.ai), wit
 - **Auto-Config** — Automatically configures opencode provider on startup
 - **Response Caching** — Configurable LRU cache for non-streaming responses
 - **CodeGraph** — Pre-indexed code knowledge graph with symbol search, explore, callers/callees, impact analysis
-- **Context Mode** — Sandbox code execution (12 languages), session tracking, content indexing, compaction recovery
+- **Context Mode** — Sandbox code execution (12 languages), session tracking, content indexing
 
 ## Quick Start
 
@@ -204,7 +204,6 @@ curl "http://localhost:8082/api/ctx/search?q=authentication+setup"
 ```
 proxy.js            — Main proxy, request router, OpenAI endpoints
 codegraph.js        — Code knowledge graph (20+ languages, symbol extraction, impact analysis)
-context-mode.js     — Context optimization (sandbox, session tracking, content indexing)
 dashboard.html      — Liquid glass dashboard with model search + CodeGraph + Context Mode UI
 .config/config.json — Runtime configuration
 ```
@@ -215,7 +214,6 @@ dashboard.html      — Liquid glass dashboard with model search + CodeGraph + C
 # Syntax check
 node --check proxy.js
 node --check codegraph.js
-node --check context-mode.js
 
 # Start proxy
 node proxy.js

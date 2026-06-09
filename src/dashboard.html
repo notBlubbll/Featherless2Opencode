@@ -454,22 +454,8 @@
             <div class="card-body collapse-section" id="section-search">
               <div class="search-bar-row">
                 <input type="text" class="form-control" id="searchQuery" placeholder="Search models... (e.g. llama, qwen, deepseek, mistral)" style="flex:1;min-width:220px" onkeydown="if(event.key==='Enter')searchModels()" oninput="debouncedSearch()">
-                <select class="form-control form-select" id="searchFamily" style="width:auto;min-width:130px">
+                <select class="form-control form-select" id="searchFamily" style="width:auto;min-width:130px" onchange="searchModels()">
                   <option value="">All Families</option>
-                  <option value="llama">Llama</option>
-                  <option value="qwen">Qwen</option>
-                  <option value="deepseek">DeepSeek</option>
-                  <option value="mistral">Mistral</option>
-                  <option value="gemma">Gemma</option>
-                  <option value="phi">Phi</option>
-                  <option value="command-r">Command R</option>
-                  <option value="rwkv">RWKV</option>
-                  <option value="starcoder">StarCoder</option>
-                  <option value="yi">Yi</option>
-                  <option value="internlm">InternLM</option>
-                  <option value="falcon">Falcon</option>
-                  <option value="mpt">MPT</option>
-                  <option value="bloom">BLOOM</option>
                 </select>
                 <select class="form-control form-select" id="searchSort" style="width:auto;min-width:120px">
                   <option value="params-desc">Largest First</option>
@@ -552,117 +538,6 @@
           </div>
         </div>
 
-        <!-- CONTEXT MODE -->
-        <div class="card" data-glass data-section="ctx">
-          <div class="glass-panel"></div>
-          <div class="card-content">
-            <div class="card-header collapsible-header" onclick="toggleSection('ctx')">
-              <i class="bi bi-chevron-down toggle-icon collapsed me-1"></i>
-              <i class="bi bi-box-arrow-in-right me-2"></i>Context Mode
-              <span class="badge bg-info ms-2" id="ctxStatsBadge" style="font-size:10px;display:none">0 saved</span>
-            </div>
-            <div class="card-body collapse-section collapsed" id="section-ctx">
-              <div class="mb-2">
-                <label class="form-label" style="font-size:10px;margin-bottom:2px">Execute Code (Sandbox)</label>
-                <div class="d-flex gap-2 mb-2">
-                  <select class="form-control form-select" id="ctxLang" style="width:auto;min-width:100px;font-size:12px">
-                    <option value="javascript">JS</option>
-                    <option value="python">Python</option>
-                    <option value="bash">Bash</option>
-                    <option value="typescript">TS</option>
-                    <option value="ruby">Ruby</option>
-                    <option value="go">Go</option>
-                    <option value="rust">Rust</option>
-                    <option value="php">PHP</option>
-                    <option value="perl">Perl</option>
-                    <option value="r">R</option>
-                    <option value="elixir">Elixir</option>
-                    <option value="csharp">C#</option>
-                  </select>
-                  <button class="btn btn-sm btn-success" onclick="ctxExecute()"><i class="bi bi-play-fill me-1"></i>Run</button>
-                  <button class="btn btn-sm btn-outline-action" onclick="ctxStats()"><i class="bi bi-bar-chart me-1"></i>Stats</button>
-                </div>
-                <textarea class="form-control" id="ctxCode" rows="3" placeholder="console.log('Hello from sandbox')" style="font-family:monospace;font-size:12px;background:rgba(0,0,0,0.3);min-height:60px"></textarea>
-              </div>
-              <div id="ctxOutput" style="display:none">
-                <label class="form-label" style="font-size:10px;margin-bottom:2px">Output</label>
-                <pre id="ctxOutputText" style="background:rgba(0,0,0,0.4);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:8px;font-size:11px;color:#32CD32;max-height:200px;overflow:auto;margin:0;white-space:pre-wrap;word-break:break-all"></pre>
-              </div>
-              <div class="mt-2">
-                <label class="form-label" style="font-size:10px;margin-bottom:2px">Search Knowledge Base</label>
-                <div class="d-flex gap-2">
-                  <input type="text" class="form-control form-control-sm" id="ctxSearchQuery" placeholder="Search indexed content..." onkeydown="if(event.key==='Enter')ctxSearch()">
-                  <button class="btn btn-sm btn-outline-action" onclick="ctxSearch()"><i class="bi bi-search"></i></button>
-                </div>
-                <div id="ctxSearchResults" class="mt-1"></div>
-              </div>
-              <div class="mt-2">
-                <label class="form-label" style="font-size:10px;margin-bottom:2px">Index Content</label>
-                <div class="d-flex gap-2">
-                  <input type="text" class="form-control form-control-sm" id="indexPath" placeholder="File or directory path to index...">
-                  <button class="btn btn-sm btn-outline-action" onclick="ctxIndexFile()"><i class="bi bi-file-earmark-plus me-1"></i>Index</button>
-                </div>
-              </div>
-              <div class="mt-2">
-                <label class="form-label" style="font-size:10px;margin-bottom:2px">Index Text</label>
-                <textarea class="form-control form-control-sm" id="ctxIndexContent" rows="2" placeholder="Paste content to index..." style="font-size:11px"></textarea>
-                <button class="btn btn-sm btn-outline-action mt-1" onclick="ctxIndexContent()"><i class="bi bi-plus-circle me-1"></i>Index Text</button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- CODEGRAPH -->
-        <div class="card" data-glass data-section="cg">
-          <div class="glass-panel"></div>
-          <div class="card-content">
-            <div class="card-header collapsible-header" onclick="toggleSection('cg')">
-              <i class="bi bi-chevron-down toggle-icon collapsed me-1"></i>
-              <i class="bi bi-diagram-3 me-2"></i>CodeGraph
-              <span class="badge bg-warning ms-2" id="cgStatsBadge" style="font-size:10px;display:none">0 symbols</span>
-            </div>
-            <div class="card-body collapse-section collapsed" id="section-cg">
-              <div class="mb-2">
-                <label class="form-label" style="font-size:10px;margin-bottom:2px">Index Project</label>
-                <div class="d-flex gap-2">
-                  <input type="text" class="form-control form-control-sm" id="cgIndexPath" placeholder="Project root path to index..." style="flex:1">
-                  <button class="btn btn-sm btn-success" onclick="cgIndex()"><i class="bi bi-arrow-repeat me-1"></i>Index</button>
-                </div>
-              </div>
-              <div class="mb-2">
-                <label class="form-label" style="font-size:10px;margin-bottom:2px">Search Symbols</label>
-                <div class="d-flex gap-2">
-                  <input type="text" class="form-control form-control-sm" id="cgSearchQuery" placeholder="Search functions, classes, types..." onkeydown="if(event.key==='Enter')cgSearch()">
-                  <button class="btn btn-sm btn-outline-action" onclick="cgSearch()"><i class="bi bi-search"></i></button>
-                </div>
-                <div id="cgSearchResults" class="mt-1"></div>
-              </div>
-              <div class="mb-2">
-                <label class="form-label" style="font-size:10px;margin-bottom:2px">Explore</label>
-                <div class="d-flex gap-2">
-                  <input type="text" class="form-control form-control-sm" id="cgExploreQuery" placeholder="How does X work?" onkeydown="if(event.key==='Enter')cgExplore()">
-                  <button class="btn btn-sm btn-outline-action" onclick="cgExplore()"><i class="bi bi-search me-1"></i>Explore</button>
-                </div>
-                <div id="cgExploreResults" class="mt-1" style="max-height:300px;overflow-y:auto"></div>
-              </div>
-              <div class="mb-2">
-                <label class="form-label" style="font-size:10px;margin-bottom:2px">Impact Analysis</label>
-                <div class="d-flex gap-2">
-                  <input type="text" class="form-control form-control-sm" id="cgImpactSymbol" placeholder="Symbol name to analyze...">
-                  <button class="btn btn-sm btn-outline-action" onclick="cgImpact()"><i class="bi bi-exclamation-triangle me-1"></i>Impact</button>
-                </div>
-                <div id="cgImpactResults" class="mt-1"></div>
-              </div>
-              <div class="d-flex gap-2 mt-2">
-                <button class="btn btn-sm btn-outline-action" onclick="cgStatus()"><i class="bi bi-bar-chart me-1"></i>Status</button>
-                <button class="btn btn-sm btn-outline-action" onclick="cgFiles()"><i class="bi bi-file-earmark me-1"></i>Files</button>
-                <button class="btn btn-sm btn-outline-action" onclick="cgRoutes()"><i class="bi bi-signpost me-1"></i>Routes</button>
-              </div>
-              <div id="cgOutput" class="mt-1"></div>
-            </div>
-          </div>
-        </div>
-
         <!-- ENVIRONMENT -->
         <div class="card" data-glass data-section="env">
           <div class="glass-panel"></div>
@@ -696,81 +571,6 @@
                   <label class="form-check-label text-muted" for="blurTokensEnv" style="cursor:pointer">SS Mode</label>
                 </div>
               </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- TOKEN COMPACTOR -->
-        <div class="card" data-glass data-section="compact">
-          <div class="glass-panel"></div>
-          <div class="card-content">
-            <div class="card-header collapsible-header" onclick="toggleSection('compact')">
-              <i class="bi bi-chevron-down toggle-icon collapsed me-1"></i>
-              <i class="bi bi-compress me-2"></i>Token Compactor
-            </div>
-            <div class="card-body collapse-section collapsed" id="section-compact">
-              <div class="mb-2">
-                <div class="form-check form-switch">
-                  <input class="form-check-input" type="checkbox" id="compactEnabled" onchange="saveCompactSettings()">
-                  <label class="form-check-label text-muted" for="compactEnabled" style="cursor:pointer">Enable Compaction</label>
-                </div>
-              </div>
-              <div class="mb-2">
-                <label class="form-label" style="font-size:10px;margin-bottom:2px">Mode</label>
-                <select class="form-control form-select" id="compactMode" onchange="saveCompactSettings()">
-                  <option value="gentle">Gentle — Filler strip</option>
-                  <option value="aggressive">Aggressive — Rewrite shorter</option>
-                  <option value="caveman">Caveman — Maximum compression</option>
-                  <option value="ultra" selected>Ultra — Nuclear compression</option>
-                </select>
-              </div>
-              <div id="compactPreview" class="mt-2" style="display:none">
-                <small class="text-muted">Last request savings</small>
-                <div class="fw-medium" id="compactStats" style="font-size:12px">-</div>
-              </div>
-              <div class="mt-2" style="font-size:11px;color:rgba(255,255,255,0.5)">
-                <div><strong style="color:rgba(255,255,255,0.7)">Gentle:</strong> strips filler words, normalizes whitespace</div>
-                <div><strong style="color:rgba(255,255,255,0.7)">Aggressive:</strong> rewrites verbose phrases, deduplicates</div>
-                <div><strong style="color:rgba(255,255,255,0.7)">Caveman:</strong> removes articles/pronouns, abbreviates everything</div>
-                <div><strong style="color:rgba(255,255,255,0.7)">Ultra:</strong> tokless protocol — caveman + RTK + CodeGraph + Context-Mode: arrows, abbreviations, code skeleton (sig-only), error extraction, dedup</div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- TOKEN SAVER -->
-        <div class="card" data-glass data-section="saver">
-          <div class="glass-panel"></div>
-          <div class="card-content">
-            <div class="card-header collapsible-header" onclick="toggleSection('saver')">
-              <i class="bi bi-chevron-down toggle-icon collapsed me-1"></i>
-              <i class="bi bi-database me-2"></i>Token Saver
-              <span class="badge bg-success ms-2" id="saverStatsBadge" style="font-size:10px;display:none">0 saved</span>
-            </div>
-            <div class="card-body collapse-section collapsed" id="section-saver">
-              <div class="mb-2">
-                <div class="form-check form-switch">
-                  <input class="form-check-input" type="checkbox" id="saverEnabled" onchange="saveSaverSettings()">
-                  <label class="form-check-label text-muted" for="saverEnabled" style="cursor:pointer">Enable Token Saver</label>
-                </div>
-              </div>
-              <div class="mb-2">
-                <label class="form-label" style="font-size:10px;margin-bottom:2px">Offload Mode</label>
-                <select class="form-control form-select" id="saverMode" onchange="saveSaverSettings()" style="font-size:12px">
-                  <option value="auto">Auto — offload old messages, compress content</option>
-                  <option value="aggressive">Aggressive — compress everything aggressively</option>
-                  <option value="minimal">Minimal — only offload, no compression</option>
-                </select>
-              </div>
-              <div class="d-flex flex-wrap gap-2 mt-2">
-                <button class="btn btn-sm btn-outline-action" onclick="saverRefresh()"><i class="bi bi-arrow-repeat me-1"></i>Refresh Stats</button>
-                <button class="btn btn-sm btn-outline-action" onclick="saverClear()"><i class="bi bi-trash me-1"></i>Clear Cache</button>
-                <button class="btn btn-sm btn-outline-action" onclick="saverSessions()"><i class="bi bi-people me-1"></i>Sessions</button>
-              </div>
-              <div id="saverStats" class="mt-2" style="display:none">
-                <div id="saverStatsContent" style="font-size:11px;background:rgba(0,0,0,0.2);border-radius:6px;padding:8px"></div>
-              </div>
-              <div id="saverSessionsOutput" class="mt-2" style="font-size:11px;max-height:200px;overflow-y:auto"></div>
             </div>
           </div>
         </div>
@@ -1007,10 +807,10 @@
     function debouncedSearch() {
       clearTimeout(searchDebounceTimer);
       searchDebounceTimer = setTimeout(() => {
-        const q = document.getElementById('searchQuery').value.trim();
+        const raw = document.getElementById('searchQuery').value;
         const f = document.getElementById('searchFamily').value;
-        if (q || f) searchModels();
-      }, 3000);
+        if (raw.trim() || f) searchModels();
+      }, 1500);
     }
 
     function showToast(message, type = 'info') {
@@ -1057,16 +857,6 @@
       renderTokenPools();
     }
 
-    async function saveCompactSettings() {
-      const enabled = document.getElementById('compactEnabled').checked;
-      const mode = document.getElementById('compactMode').value;
-      try {
-        const resp = await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ compactEnabled: enabled, compactMode: mode }) });
-        const data = await resp.json();
-        if (data.success) { showToast(`Compactor: ${enabled ? mode : 'off'}`, 'info'); }
-      } catch (e) {}
-    }
-
     async function loadConfiguration() {
       try {
         const healthResponse = await fetch('/healthz');
@@ -1080,8 +870,7 @@
           if (document.getElementById('upstreamUrl')) document.getElementById('upstreamUrl').value = configData.upstreamBaseURL || 'https://api.featherless.ai/v1';
           if (document.getElementById('requestTimeout')) document.getElementById('requestTimeout').value = configData.requestTimeout || '15m';
           if (document.getElementById('wallpaperToggle')) document.getElementById('wallpaperToggle').checked = configData.enableWallpaper !== false;
-          if (document.getElementById('compactEnabled')) document.getElementById('compactEnabled').checked = configData.compactEnabled !== false;
-          if (document.getElementById('compactMode')) document.getElementById('compactMode').value = configData.compactMode || 'caveman';
+
         }
         const modelsResponse = await fetch('/api/models');
         const modelsData = await modelsResponse.json();
@@ -1089,6 +878,7 @@
         renderEnabledModels();
         renderTokenPools();
         updateStats();
+        loadFamilies();
       } catch (error) {
         showToast('Failed to load configuration', 'danger');
       }
@@ -1096,6 +886,36 @@
 
     // --- Enabled Models ---
     let modelDisplayNames = {};
+
+    // --- Family Dropdown ---
+    function loadFamilies() {
+      const sel = document.getElementById('searchFamily');
+      const current = sel.value;
+      sel.querySelectorAll('option:not([value=""])').forEach(o => o.remove());
+      fetch('/api/models/families')
+        .then(r => r.json())
+        .then(data => {
+          const families = (data.families && data.families.length) ? data.families : ['llama','qwen','deepseek','mistral','gemma','phi','yi','internlm','falcon','rwkv','starcoder','bloom','command-r'];
+          families.forEach(f => {
+            if (!f) return;
+            const opt = document.createElement('option');
+            opt.value = f;
+            opt.textContent = f.charAt(0).toUpperCase() + f.slice(1);
+            sel.appendChild(opt);
+          });
+          if (current && Array.from(sel.options).some(o => o.value === current)) {
+            sel.value = current;
+          }
+        })
+        .catch(() => {
+          if (sel.querySelectorAll('option:not([value=""])').length > 0) return;
+          ['llama','qwen','deepseek','mistral','gemma','phi','yi','internlm','falcon'].forEach(f => {
+            const opt = document.createElement('option');
+            opt.value = f; opt.textContent = f.charAt(0).toUpperCase() + f.slice(1);
+            sel.appendChild(opt);
+          });
+        });
+    }
 
     function renderEnabledModels() {
       const container = document.getElementById('enabledModelsContainer');
@@ -1315,15 +1135,6 @@
       const pagination = document.getElementById('searchPagination');
       const countBadge = document.getElementById('searchResultCount');
 
-      if (!query && !family) {
-        scrollWrap.style.display = 'none';
-        emptyState.style.display = '';
-        emptyState.innerHTML = '<div class="text-center py-4 text-muted" style="font-size:13px"><i class="bi bi-search" style="font-size:2rem;opacity:0.3;display:block;margin-bottom:8px"></i>Enter a search term or select a family</div>';
-        pagination.style.display = 'none';
-        countBadge.style.display = 'none';
-        return;
-      }
-
       scrollWrap.style.display = '';
       emptyState.style.display = 'none';
       container.innerHTML = '<div class="text-center py-4"><div class="spinner-border text-primary spinner-border-sm" role="status"></div><p class="mt-2 text-muted" style="font-size:13px">Searching Featherless...</p></div>';
@@ -1340,6 +1151,8 @@
 
         if (data.error) {
           container.innerHTML = `<div class="text-center py-4 text-danger" style="font-size:13px">${escapeHtml(data.error.message || 'Search failed')}</div>`;
+          pagination.style.display = 'none';
+          countBadge.style.display = 'none';
           return;
         }
 
@@ -1448,28 +1261,6 @@
           document.getElementById('statusText').textContent = 'Online';
           renderTokenPools();
           updateStats();
-          if (data.compact) {
-            const preview = document.getElementById('compactPreview');
-            const stats = document.getElementById('compactStats');
-            if (preview && stats) {
-              preview.style.display = '';
-              stats.textContent = `${data.compact.mode} (${data.compact.enabled ? 'ON' : 'OFF'})`;
-            }
-          }
-          if (data.tokenSaver) {
-            const badge = document.getElementById('saverStatsBadge');
-            if (badge) {
-              badge.style.display = data.tokenSaver.enabled ? '' : 'none';
-              if (data.tokenSaver.enabled) {
-                const saved = data.tokenSaver.bytesSavedFormatted || '0 B';
-                badge.textContent = `${data.tokenSaver.offloads} offloads · ${saved}`;
-              }
-            }
-            const saverEn = document.getElementById('saverEnabled');
-            if (saverEn) saverEn.checked = data.tokenSaver.enabled;
-            const saverMode = document.getElementById('saverMode');
-            if (saverMode) saverMode.value = data.tokenSaver.autoOffload ? (data.tokenSaver.offloadThreshold < 1000 ? 'aggressive' : 'auto') : 'minimal';
-          }
           if (!silent) showToast('Proxy is healthy', 'success');
         } else throw new Error('Unhealthy');
       } catch (error) {
@@ -1495,10 +1286,6 @@
         upstreamBaseURL: document.getElementById('upstreamUrl').value,
         requestTimeout: document.getElementById('requestTimeout').value,
         enableWallpaper: document.getElementById('wallpaperToggle').checked,
-        compactEnabled: document.getElementById('compactEnabled')?.checked ?? true,
-        compactMode: document.getElementById('compactMode')?.value || 'caveman',
-        tokenSaverEnabled: document.getElementById('saverEnabled')?.checked ?? true,
-        tokenSaverMode: document.getElementById('saverMode')?.value || 'auto',
       };
       try {
         const response = await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newConfig) });
@@ -1520,315 +1307,6 @@
       body.classList.toggle('collapsed');
       icon.classList.toggle('collapsed');
       setTimeout(() => initLiquidGlass(), 50);
-    }
-
-    // --- Context Mode ---
-    async function ctxExecute() {
-      const code = document.getElementById('ctxCode').value.trim();
-      if (!code) { showToast('Enter code to execute', 'warning'); return; }
-      const lang = document.getElementById('ctxLang').value;
-      const output = document.getElementById('ctxOutput');
-      const outputText = document.getElementById('ctxOutputText');
-      output.style.display = '';
-      outputText.textContent = 'Executing...';
-      outputText.style.color = '#32CD32';
-      try {
-        const resp = await fetch('/api/ctx/execute', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code, language: lang, timeout: 30000 })
-        });
-        const data = await resp.json();
-        if (data.stderr && data.stderr.trim()) {
-          outputText.textContent = data.stdout + '\n--- STDERR ---\n' + data.stderr;
-          outputText.style.color = data.exitCode !== 0 ? '#dc3545' : '#32CD32';
-        } else {
-          outputText.textContent = data.stdout || '(no output)';
-        }
-        if (data.duration) outputText.textContent += `\n--- ${data.duration}ms | exit: ${data.exitCode} ---`;
-      } catch (e) {
-        outputText.textContent = 'Error: ' + e.message;
-        outputText.style.color = '#dc3545';
-      }
-    }
-
-    async function ctxStats() {
-      try {
-        const resp = await fetch('/api/ctx/stats');
-        const data = await resp.json();
-        const badge = document.getElementById('ctxStatsBadge');
-        const saved = data.savings?.totalBytesSaved || 0;
-        const calls = data.savings?.totalToolCalls || 0;
-        badge.style.display = '';
-        badge.textContent = `${calls} calls · ${(saved / 1024).toFixed(1)}KB saved`;
-        showToast(`Context: ${calls} tool calls, ${(saved / 1024).toFixed(1)}KB saved, ${data.store?.totalChunks || 0} chunks indexed`, 'info');
-      } catch (e) { showToast('Failed to load stats', 'danger'); }
-    }
-
-    async function ctxSearch() {
-      const q = document.getElementById('ctxSearchQuery').value.trim();
-      if (!q) return;
-      const container = document.getElementById('ctxSearchResults');
-      container.innerHTML = '<div class="text-muted" style="font-size:11px">Searching...</div>';
-      try {
-        const resp = await fetch(`/api/ctx/search?q=${encodeURIComponent(q)}`);
-        const data = await resp.json();
-        if (data.results.length === 0) {
-          container.innerHTML = '<div class="text-muted" style="font-size:11px">No results</div>';
-          return;
-        }
-        container.innerHTML = data.results.map(r => `
-          <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:4px;padding:6px;margin-bottom:4px">
-            <div style="font-size:11px;color:#58a6ff;font-weight:600">${escapeHtml(r.title.substring(0, 80))}</div>
-            <div style="font-size:10px;color:rgba(255,255,255,0.5);margin-top:2px">${escapeHtml(r.content.substring(0, 150))}...</div>
-            <div style="font-size:9px;color:rgba(255,255,255,0.3);margin-top:2px">score: ${r.score} · ${r.timestamp}</div>
-          </div>
-        `).join('');
-      } catch (e) {
-        container.innerHTML = `<div class="text-danger" style="font-size:11px">Search failed: ${escapeHtml(e.message)}</div>`;
-      }
-    }
-
-    async function ctxIndexFile() {
-      const filePath = document.getElementById('indexPath').value.trim();
-      if (!filePath) { showToast('Enter a file path', 'warning'); return; }
-      try {
-        const resp = await fetch('/api/ctx/index-file', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ filePath, recursive: true })
-        });
-        const data = await resp.json();
-        if (data.success) showToast(`Indexed ${data.indexed} files`, 'success');
-        else showToast('Index failed: ' + (data.error || ''), 'danger');
-      } catch (e) { showToast('Index failed: ' + e.message, 'danger'); }
-    }
-
-    async function ctxIndexContent() {
-      const content = document.getElementById('ctxIndexContent').value.trim();
-      if (!content) { showToast('Enter content to index', 'warning'); return; }
-      try {
-        const resp = await fetch('/api/ctx/index', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ label: 'manual-' + Date.now(), content, contentType: 'prose', sourceCategory: 'manual' })
-        });
-        const data = await resp.json();
-        if (data.success) { showToast(`Indexed: ${data.chunkCount} chunks`, 'success'); document.getElementById('ctxIndexContent').value = ''; }
-        else showToast('Index failed', 'danger');
-      } catch (e) { showToast('Index failed: ' + e.message, 'danger'); }
-    }
-
-    // --- CodeGraph ---
-    async function cgIndex() {
-      const filePath = document.getElementById('cgIndexPath').value.trim();
-      if (!filePath) { showToast('Enter a project path', 'warning'); return; }
-      const out = document.getElementById('cgOutput');
-      out.innerHTML = '<div class="text-muted" style="font-size:11px">Indexing...</div>';
-      try {
-        const resp = await fetch('/api/cg/index', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ filePath, recursive: true })
-        });
-        const data = await resp.json();
-        if (data.success) {
-          out.innerHTML = `<div style="font-size:11px;color:#32CD32">Indexed ${data.files} files, ${data.symbols} symbols, ${data.edges} edges</div>`;
-          showToast(`Graph: ${data.symbols} symbols, ${data.edges} edges, ${data.files} files`, 'success');
-          cgUpdateBadge();
-        } else {
-          out.innerHTML = `<div class="text-danger" style="font-size:11px">${escapeHtml(data.error || 'Index failed')}</div>`;
-        }
-      } catch (e) {
-        out.innerHTML = `<div class="text-danger" style="font-size:11px">${escapeHtml(e.message)}</div>`;
-      }
-    }
-
-    async function cgSearch() {
-      const q = document.getElementById('cgSearchQuery').value.trim();
-      if (!q) return;
-      const container = document.getElementById('cgSearchResults');
-      container.innerHTML = '<div class="text-muted" style="font-size:11px">Searching...</div>';
-      try {
-        const resp = await fetch(`/api/cg/search?q=${encodeURIComponent(q)}`);
-        const data = await resp.json();
-        if (data.results.length === 0) {
-          container.innerHTML = '<div class="text-muted" style="font-size:11px">No symbols found</div>';
-          return;
-        }
-        container.innerHTML = data.results.map(s => `
-          <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:4px;padding:6px;margin-bottom:4px;cursor:pointer" onclick="cgShowSymbol('${escapeHtml(s.name)}')">
-            <span style="font-size:11px;color:#58a6ff;font-weight:600">${escapeHtml(s.name)}</span>
-            <span style="font-size:10px;color:rgba(255,255,255,0.4);margin-left:6px">${s.kind}</span>
-            <span style="font-size:9px;color:rgba(255,255,255,0.3);margin-left:6px">${escapeHtml(s.file || '')}:${s.line || ''}</span>
-          </div>
-        `).join('');
-      } catch (e) {
-        container.innerHTML = `<div class="text-danger" style="font-size:11px">${escapeHtml(e.message)}</div>`;
-      }
-    }
-
-    async function cgShowSymbol(name) {
-      try {
-        const resp = await fetch(`/api/cg/symbol/${encodeURIComponent(name)}`);
-        const data = await resp.json();
-        const out = document.getElementById('cgOutput');
-        const callers = await (await fetch(`/api/cg/callers/${encodeURIComponent(name)}`)).json();
-        const callees = await (await fetch(`/api/cg/callees/${encodeURIComponent(name)}`)).json();
-        out.innerHTML = `
-          <div style="background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:8px;font-size:11px">
-            <div style="color:#58a6ff;font-weight:600;margin-bottom:4px">${escapeHtml(name)}</div>
-            <div style="color:rgba(255,255,255,0.6)">Found ${data.occurrences.length} occurrence(s) · ${callers.callers.length} callers · ${callees.callees.length} callees</div>
-            ${callers.callers.length > 0 ? `<div style="margin-top:4px;color:rgba(255,255,255,0.5)">Called by: ${callers.callers.map(c => `<span style="color:#32CD32">${escapeHtml(c.name)}</span>`).join(', ')}</div>` : ''}
-            ${callees.callees.length > 0 ? `<div style="margin-top:2px;color:rgba(255,255,255,0.5)">Calls: ${callees.callees.map(c => `<span style="color:#ffc107">${escapeHtml(c.name)}</span>`).join(', ')}</div>` : ''}
-          </div>`;
-      } catch (e) { showToast('Failed: ' + e.message, 'danger'); }
-    }
-
-    async function cgExplore() {
-      const q = document.getElementById('cgExploreQuery').value.trim();
-      if (!q) return;
-      const container = document.getElementById('cgExploreResults');
-      container.innerHTML = '<div class="text-muted" style="font-size:11px">Exploring...</div>';
-      try {
-        const resp = await fetch(`/api/cg/explore?q=${encodeURIComponent(q)}&includeCode=true`);
-        const data = await resp.json();
-        let html = `<div style="font-size:11px;color:rgba(255,255,255,0.6);margin-bottom:6px">Found ${data.symbols.length} symbols, ${data.relationships.length} relationships, blast radius: ${data.blastRadius}</div>`;
-        for (const s of data.symbols) {
-          html += `<div style="background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:8px;margin-bottom:6px">`;
-          html += `<div style="color:#58a6ff;font-weight:600;font-size:12px">${escapeHtml(s.name)} <span style="color:rgba(255,255,255,0.4);font-size:10px">${s.kind} · ${escapeHtml(s.file || '')}:${s.line || ''}</span></div>`;
-          if (s.code) html += `<pre style="background:rgba(0,0,0,0.4);border-radius:4px;padding:6px;margin:4px 0;font-size:10px;color:#32CD32;overflow-x:auto;white-space:pre-wrap;max-height:200px">${escapeHtml(s.code)}</pre>`;
-          if (s.callers?.length) html += `<div style="font-size:10px;color:rgba(255,255,255,0.5)">Calls: ${s.callers.map(c => escapeHtml(c.name)).join(', ')}</div>`;
-          html += `</div>`;
-        }
-        container.innerHTML = html;
-      } catch (e) {
-        container.innerHTML = `<div class="text-danger" style="font-size:11px">${escapeHtml(e.message)}</div>`;
-      }
-    }
-
-    async function cgImpact() {
-      const symbol = document.getElementById('cgImpactSymbol').value.trim();
-      if (!symbol) return;
-      const container = document.getElementById('cgImpactResults');
-      container.innerHTML = '<div class="text-muted" style="font-size:11px">Analyzing...</div>';
-      try {
-        const resp = await fetch(`/api/cg/impact/${encodeURIComponent(symbol)}?depth=2`);
-        const data = await resp.json();
-        if (data.impact.length === 0) {
-          container.innerHTML = '<div class="text-muted" style="font-size:11px">No impact found</div>';
-          return;
-        }
-        container.innerHTML = `<div style="font-size:11px;color:rgba(255,255,255,0.6);margin-bottom:4px">${data.count} affected symbol(s)</div>` +
-          data.impact.map(i => `<div style="font-size:10px;padding:2px 0;color:rgba(255,255,255,0.7)"><span style="color:#dc3545">${escapeHtml(i.name)}</span> <span style="color:rgba(255,255,255,0.3)">${i.relation} (depth ${i.depth})</span></div>`).join('');
-      } catch (e) {
-        container.innerHTML = `<div class="text-danger" style="font-size:11px">${escapeHtml(e.message)}</div>`;
-      }
-    }
-
-    async function cgStatus() {
-      try {
-        const resp = await fetch('/api/cg/status');
-        const data = await resp.json();
-        document.getElementById('cgOutput').innerHTML = `<pre style="background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:8px;font-size:11px;color:rgba(255,255,255,0.8);margin:0">${JSON.stringify(data, null, 2)}</pre>`;
-        cgUpdateBadge();
-      } catch (e) { showToast('Failed', 'danger'); }
-    }
-
-    async function cgFiles() {
-      try {
-        const resp = await fetch('/api/cg/files');
-        const data = await resp.json();
-        document.getElementById('cgOutput').innerHTML = `<div style="font-size:11px;color:rgba(255,255,255,0.6)">${data.count} files indexed</div>` +
-          data.files.slice(0, 30).map(f => `<div style="font-size:10px;color:rgba(255,255,255,0.5)">${escapeHtml(f.file)} <span style="color:rgba(255,255,255,0.3)">(${f.symbols} symbols)</span></div>`).join('');
-      } catch (e) { showToast('Failed', 'danger'); }
-    }
-
-    async function cgRoutes() {
-      try {
-        const resp = await fetch('/api/cg/routes');
-        const data = await resp.json();
-        document.getElementById('cgOutput').innerHTML = `<div style="font-size:11px;color:rgba(255,255,255,0.6)">${data.count} routes detected</div>` +
-          data.routes.slice(0, 30).map(r => `<div style="font-size:10px;color:rgba(255,255,255,0.5)"><span style="color:#ffc107">${escapeHtml(r.path)}</span> → ${escapeHtml(r.handler || '?')} <span style="color:rgba(255,255,255,0.3)">(${r.framework})</span></div>`).join('');
-      } catch (e) { showToast('Failed', 'danger'); }
-    }
-
-    async function cgUpdateBadge() {
-      try {
-        const resp = await fetch('/api/cg/status');
-        const data = await resp.json();
-        const badge = document.getElementById('cgStatsBadge');
-        badge.style.display = '';
-        badge.textContent = `${data.totalNodes} symbols · ${data.totalEdges} edges`;
-      } catch {}
-    }
-
-    async function saverRefresh() {
-      try {
-        const resp = await fetch('/api/saver/stats');
-        const data = await resp.json();
-        const container = document.getElementById('saverStats');
-        const content = document.getElementById('saverStatsContent');
-        container.style.display = '';
-        content.innerHTML = `
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px">
-            <div><span style="color:rgba(255,255,255,0.5)">Status:</span> <span style="color:${data.enabled ? '#32CD32' : '#dc354f'}">${data.enabled ? 'Enabled' : 'Disabled'}</span></div>
-            <div><span style="color:rgba(255,255,255,0.5)">Mode:</span> ${data.autoOffload ? (data.offloadThreshold < 1000 ? 'Aggressive' : 'Auto') : 'Minimal'}</div>
-            <div><span style="color:rgba(255,255,255,0.5)">Cached Entries:</span> ${data.size}</div>
-            <div><span style="color:rgba(255,255,255,0.5)">Max Entries:</span> ${data.maxEntries}</div>
-            <div><span style="color:rgba(255,255,255,0.5)">Offloads:</span> ${data.offloads}</div>
-            <div><span style="color:rgba(255,255,255,0.5)">Bytes Saved:</span> ${data.bytesSavedFormatted}</div>
-            <div><span style="color:rgba(255,255,255,0.5)">Hits:</span> ${data.hits}</div>
-            <div><span style="color:rgba(255,255,255,0.5)">Misses:</span> ${data.misses}</div>
-            <div><span style="color:rgba(255,255,255,0.5)">Evictions:</span> ${data.evictions}</div>
-            <div><span style="color:rgba(255,255,255,0.5)">Sessions Tracked:</span> ${data.sessionsTracked}</div>
-          </div>`;
-      } catch (e) { showToast('Failed: ' + e.message, 'danger'); }
-    }
-
-    async function saverClear() {
-      try {
-        const resp = await fetch('/api/saver/clear', { method: 'POST' });
-        const data = await resp.json();
-        if (data.success) {
-          showToast('Token saver cache cleared', 'success');
-          document.getElementById('saverStats').style.display = 'none';
-          document.getElementById('saverSessionsOutput').innerHTML = '';
-        }
-      } catch (e) { showToast('Failed: ' + e.message, 'danger'); }
-    }
-
-    async function saverSessions() {
-      try {
-        const resp = await fetch('/api/saver/sessions');
-        const data = await resp.json();
-        const container = document.getElementById('saverSessionsOutput');
-        if (!data.sessions || data.sessions.length === 0) {
-          container.innerHTML = '<div class="text-muted" style="font-size:11px">No active sessions</div>';
-          return;
-        }
-        container.innerHTML = '<div style="font-size:11px;color:rgba(255,255,255,0.6);margin-bottom:4px">' + data.sessions.length + ' active session(s)</div>' +
-          data.sessions.slice(0, 20).map(s => `
-            <div style="background:rgba(0,0,0,0.2);border-radius:4px;padding:6px;margin-bottom:4px;font-size:10px">
-              <div style="color:#58a6ff">${escapeHtml(s.fingerprint)}</div>
-              <div style="color:rgba(255,255,255,0.5)">Model: ${escapeHtml(s.lastModel || '?')} · Requests: ${s.requestCount || 0} · Saved: ${s.totalSaved || 0} tokens</div>
-              <div style="color:rgba(255,255,255,0.3)">Last: ${s.lastSeen ? new Date(s.lastSeen).toLocaleString() : '?'}</div>
-            </div>
-          `).join('');
-      } catch (e) { showToast('Failed: ' + e.message, 'danger'); }
-    }
-
-    async function saveSaverSettings() {
-      const mode = document.getElementById('saverMode').value;
-      const enabled = document.getElementById('saverEnabled').checked;
-      try {
-        await fetch('/api/config', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tokenSaverEnabled: enabled, tokenSaverMode: mode }),
-        });
-        showToast('Token saver settings saved', 'success');
-      } catch (e) { showToast('Failed: ' + e.message, 'danger'); }
     }
 
     function escapeHtml(text) {
